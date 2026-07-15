@@ -225,10 +225,10 @@ impl AuthorityStore for PostgresAuthorityStore {
         &self,
         id: Uuid,
         relay: &str,
-        generation: i64,
+        expected_generation: i64,
     ) -> Result<(), AuthorityError> {
         let relay = hex::decode(relay).map_err(|_| AuthorityError::Rejected)?;
-        let result=sqlx::query("UPDATE push_gateway_delegations SET generation=$3,revoked_at=now(),updated_at=now() WHERE installation_id=$1 AND relay_pubkey=$2 AND generation<$3").bind(id).bind(relay).bind(generation).execute(&self.pool).await.map_err(db)?;
+        let result=sqlx::query("UPDATE push_gateway_delegations SET revoked_at=now(),updated_at=now() WHERE installation_id=$1 AND relay_pubkey=$2 AND generation=$3 AND revoked_at IS NULL").bind(id).bind(relay).bind(expected_generation).execute(&self.pool).await.map_err(db)?;
         if result.rows_affected() != 1 {
             return Err(AuthorityError::Rejected);
         }

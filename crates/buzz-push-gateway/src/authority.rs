@@ -133,11 +133,13 @@ pub trait AuthorityStore: Send + Sync {
         token_ciphertext: Vec<u8>,
         token_fingerprint: [u8; 32],
     ) -> Result<(), AuthorityError>;
+    /// Revoke an active delegation only when `expected_generation` is current,
+    /// retaining that generation as the replacement watermark.
     async fn revoke_delegation(
         &self,
         installation_id: Uuid,
         relay_pubkey: &str,
-        new_generation: i64,
+        expected_generation: i64,
     ) -> Result<(), AuthorityError>;
     async fn revoke_installation(
         &self,
@@ -348,7 +350,7 @@ impl AuthorityStore for MemoryAuthorityStore {
         &self,
         id: Uuid,
         relay: &str,
-        generation: i64,
+        expected_generation: i64,
     ) -> Result<(), AuthorityError> {
         let mut s = self.0.lock().map_err(|_| AuthorityError::Unavailable)?;
         let key = (id, relay.to_owned());
@@ -356,10 +358,9 @@ impl AuthorityStore for MemoryAuthorityStore {
             .delegations
             .get_mut(&key)
             .ok_or(AuthorityError::Rejected)?;
-        if generation <= old.generation {
+        if old.revoked || expected_generation != old.generation {
             return Err(AuthorityError::Rejected);
         }
-        old.generation = generation;
         old.revoked = true;
         Ok(())
     }
@@ -572,5 +573,70 @@ mod tests {
             .await
             .unwrap();
         assert!(admitted(&store, &"33".repeat(32), request).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delegation_revocation_requires_the_current_generation() {
+        let store = store().await;
+
+        assert_eq!(
+            store
+                .revoke_delegation(Uuid::from_u128(1), &"11".repeat(32), 0)
+                .await,
+            Err(AuthorityError::Rejected)
+        );
+        assert_eq!(
+            store
+                .revoke_delegation(Uuid::from_u128(1), &"11".repeat(32), 2)
+                .await,
+            Err(AuthorityError::Rejected)
+        );
+        admitted(&store, &"44".repeat(32), Uuid::new_v4())
+            .await
+            .expect("rejected revocations must leave generation 1 active");
+
+        store
+            .revoke_delegation(Uuid::from_u128(1), &"11".repeat(32), 1)
+            .await
+            .expect("the current generation can be revoked");
+        assert!(admitted(&store, &"55".repeat(32), Uuid::new_v4())
+            .await
+            .is_err());
+
+        let replacement = |id, generation| Delegation {
+            id,
+            installation_id: Uuid::from_u128(1),
+            relay_pubkey: "11".repeat(32),
+            endpoint_epoch: 1,
+            generation,
+            not_before: 900,
+            expires_at: 1_500,
+            revoked: false,
+        };
+        assert_eq!(
+            store
+                .upsert_delegation(replacement(Uuid::from_u128(3), 1))
+                .await,
+            Err(AuthorityError::Rejected)
+        );
+        store
+            .upsert_delegation(replacement(Uuid::from_u128(4), 2))
+            .await
+            .expect("only a strictly newer generation can reactivate the delegation");
+        store
+            .authorize_delivery(
+                Uuid::from_u128(4),
+                &"11".repeat(32),
+                1,
+                2,
+                &"66".repeat(32),
+                Uuid::new_v4(),
+                1_100,
+                60,
+                10,
+                1_000,
+            )
+            .await
+            .expect("generation 2 authority is active");
     }
 }

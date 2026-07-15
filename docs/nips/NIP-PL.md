@@ -362,7 +362,7 @@ Transcript domain `buzz.push.revoke-delegation.v1`; ordered object:
 {"v":1,"audience":"https://push.buzz.xyz/v1/delegations/revoke","challenge_id":"<uuid>","challenge":"<challenge>","installation_handle":"<uuid>","relay_pubkey":"<hex>","generation":<integer>}
 ```
 
-The generation identifies the current delegation generation. Success is `200 {"status":"revoked"}`.
+The supplied generation MUST equal the current delegation generation. The gateway atomically compares it against the locked delegation row, marks that delegation revoked, and retains the same generation as its watermark. A stale or future generation is rejected without changing the delegation. Any later delegation for the same `(installation_handle, relay_pubkey)` MUST use a strictly greater generation. Success is `200 {"status":"revoked"}`.
 
 `POST /v1/installations/revoke` request:
 
