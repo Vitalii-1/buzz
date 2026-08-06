@@ -149,8 +149,8 @@ fn reconcile_inbound_persona_event_blocking(
         load_managed_agents, load_teams,
         persona_events::persona_from_event,
         retention::{
-            inbound_event_outcome, open_retention_db, retain_inbound_event, InboundOutcome,
-            RetainedEvent,
+            commit_inbound_with_store, inbound_event_outcome, open_retention_db,
+            retain_inbound_event, InboundOutcome, RetainedEvent,
         },
         save_managed_agents, save_teams,
         team_events::team_content_from_event,
@@ -228,45 +228,52 @@ fn reconcile_inbound_persona_event_blocking(
         raw_event: event.as_json(),
         pending_sync: false,
     };
-    // Managed-agent access changes can fail while stopping a runtime. Preflight
-    // the retention decision now, but do not advance the durable head until the
-    // local store has been saved; otherwise replay sees the failed revocation as
-    // already consumed and can never retry it. Persona/team paths retain first
-    // as before because they have no fallible runtime transition.
-    if kind == KIND_MANAGED_AGENT
-        && inbound_event_outcome(&conn, &inbound_retained_event)? == InboundOutcome::Skipped
-    {
-        return Ok(None);
-    }
-    if kind != KIND_MANAGED_AGENT
-        && retain_inbound_event(&conn, &inbound_retained_event)? == InboundOutcome::Skipped
-    {
-        return Ok(None);
-    }
-
+    // Advance the durable retention head only AFTER the fallible local-store
+    // save succeeds (`commit_inbound_with_store`). If the head advanced first
+    // and the save then failed, replay of the identical relay event would read
+    // the head as already consumed (equal `created_at` reads as stale,
+    // `retention.rs`) and the projection would be lost forever. The
+    // managed-agent arm keeps its own preflight so a runtime transition is
+    // never attempted for a skipped event.
     let mut runtime_refresh = None;
     match kind {
         KIND_PERSONA => {
-            let mut personas = load_personas(&app)?;
-            // `inbound_persona` is `Some` for KIND_PERSONA (set above).
-            apply_inbound_persona(
-                &mut personas,
-                inbound_persona.expect("persona parsed above"),
-            );
-            save_personas(&app, &personas)?;
+            let outcome = commit_inbound_with_store(&conn, &inbound_retained_event, || {
+                let mut personas = load_personas(&app)?;
+                // `inbound_persona` is `Some` for KIND_PERSONA (set above).
+                apply_inbound_persona(
+                    &mut personas,
+                    inbound_persona.expect("persona parsed above"),
+                );
+                save_personas(&app, &personas)
+            })?;
+            if outcome == InboundOutcome::Skipped {
+                return Ok(None);
+            }
         }
         KIND_TEAM => {
-            let mut teams = load_teams(&app)?;
-            commit_inbound_team(
-                &mut teams,
-                d_tag,
-                team_content_from_event(&event)?,
-                |teams| save_teams(&app, teams),
-                || load_managed_agents(&app),
-                |records| save_managed_agents(&app, records),
-            )?;
+            let outcome = commit_inbound_with_store(&conn, &inbound_retained_event, || {
+                let mut teams = load_teams(&app)?;
+                commit_inbound_team(
+                    &mut teams,
+                    d_tag,
+                    team_content_from_event(&event)?,
+                    |teams| save_teams(&app, teams),
+                    || load_managed_agents(&app),
+                    |records| save_managed_agents(&app, records),
+                )
+            })?;
+            if outcome == InboundOutcome::Skipped {
+                return Ok(None);
+            }
         }
         KIND_MANAGED_AGENT => {
+            // Preflight before the runtime transition: a skipped event must not
+            // stop a running agent. The durable head is still advanced only
+            // after `save_managed_agents` below.
+            if inbound_event_outcome(&conn, &inbound_retained_event)? == InboundOutcome::Skipped {
+                return Ok(None);
+            }
             let mut agents = load_managed_agents(&app)?;
             let managed_agent = inbound_managed_agent.ok_or_else(|| {
                 "managed-agent content was not parsed before retention".to_string()
@@ -418,8 +425,8 @@ fn reconcile_inbound_tombstone(
     use crate::managed_agents::{
         load_managed_agents, load_teams,
         retention::{
-            open_retention_db, retain_inbound_event, tombstone_retention_d_tag, InboundOutcome,
-            RetainedEvent,
+            commit_inbound_tombstone_with_store, open_retention_db, tombstone_retention_d_tag,
+            InboundOutcome, RetainedEvent,
         },
         save_managed_agents, save_teams,
     };
@@ -449,41 +456,50 @@ fn reconcile_inbound_tombstone(
         return Ok(());
     };
     let conn = open_retention_db(&scope.db_path)?;
-    let outcome = retain_inbound_event(
+    let owner_hex = event.pubkey.to_hex();
+    let inbound_tombstone = RetainedEvent {
+        kind: KIND_DELETION,
+        pubkey: owner_hex.clone(),
+        d_tag: tombstone_retention_d_tag(target_kind, &target_d_tag),
+        content: event.content.to_string(),
+        created_at: event.created_at.as_secs() as i64,
+        raw_event: event.as_json(),
+        pending_sync: false,
+    };
+
+    // Resolve the tombstone against BOTH its own kind:5 row AND the covered
+    // `(target_kind, owner, d_tag)` head, purging the head atomically with the
+    // tombstone commit only after the fallible JSON save — the relay's
+    // coordinate-deletion contract (see `commit_inbound_tombstone_with_store`).
+    // The removal uses the SAME per-kind match rule the apply fns use: persona
+    // by `persona_d_tag`, team by `id`, managed-agent by `pubkey`.
+    let outcome = commit_inbound_tombstone_with_store(
         &conn,
-        &RetainedEvent {
-            kind: KIND_DELETION,
-            pubkey: event.pubkey.to_hex(),
-            d_tag: tombstone_retention_d_tag(target_kind, &target_d_tag),
-            content: event.content.to_string(),
-            created_at: event.created_at.as_secs() as i64,
-            raw_event: event.as_json(),
-            pending_sync: false,
+        &inbound_tombstone,
+        target_kind,
+        &owner_hex,
+        &target_d_tag,
+        || match target_kind {
+            KIND_PERSONA => {
+                let mut personas = load_personas(app)?;
+                personas.retain(|record| persona_d_tag(record) != target_d_tag);
+                save_personas(app, &personas)
+            }
+            KIND_TEAM => {
+                let mut teams = load_teams(app)?;
+                teams.retain(|record| record.id != target_d_tag);
+                save_teams(app, &teams)
+            }
+            KIND_MANAGED_AGENT => {
+                let mut agents = load_managed_agents(app)?;
+                agents.retain(|record| record.pubkey != target_d_tag);
+                save_managed_agents(app, &agents)
+            }
+            _ => unreachable!("target kind gated above"),
         },
     )?;
     if outcome == InboundOutcome::Skipped {
         return Ok(());
-    }
-
-    // Remove the local record using the SAME per-kind match rule the apply fns
-    // use: persona by `persona_d_tag`, team by `id`, managed-agent by `pubkey`.
-    match target_kind {
-        KIND_PERSONA => {
-            let mut personas = load_personas(app)?;
-            personas.retain(|record| persona_d_tag(record) != target_d_tag);
-            save_personas(app, &personas)?;
-        }
-        KIND_TEAM => {
-            let mut teams = load_teams(app)?;
-            teams.retain(|record| record.id != target_d_tag);
-            save_teams(app, &teams)?;
-        }
-        KIND_MANAGED_AGENT => {
-            let mut agents = load_managed_agents(app)?;
-            agents.retain(|record| record.pubkey != target_d_tag);
-            save_managed_agents(app, &agents)?;
-        }
-        _ => unreachable!("target kind gated above"),
     }
     try_regenerate_nest(app);
 
@@ -675,6 +691,11 @@ fn apply_inbound_team(teams: &mut Vec<TeamRecord>, d_tag: String, inbound: TeamE
             instructions: inbound.instructions.unwrap_or_default(),
             persona_ids: inbound.persona_ids.unwrap_or_default(),
             is_builtin: false,
+            // Catalog share state is scoped and never inbound-authoritative.
+            shared: false,
+            // Owner-device sync, not a catalog add: the team is this owner's
+            // own, so it has no foreign publication to attribute.
+            catalog_source: None,
             source_dir: None,
             is_symlink: false,
             symlink_target: None,
