@@ -1,7 +1,10 @@
+use crate::managed_agents::discovery::EffortNormalization;
 use crate::managed_agents::discovery::KnownAcpRuntime;
 use crate::managed_agents::types::ManagedAgentRecord;
 
+use super::effort::effort_tier_alias;
 use super::types::*;
+use super::LEGACY_THINKING_EFFORT_KEY;
 
 /// Build the full config surface for an agent, merging all tiers.
 ///
@@ -40,6 +43,7 @@ pub(crate) fn read_config_surface(
     let provider_env_var = runtime_meta.and_then(|m| m.provider_env_var);
     let provider_locked = runtime_meta.is_some_and(|m| m.provider_locked);
     let thinking_env_var = runtime_meta.and_then(|m| m.thinking_env_var);
+    let effort_norm = runtime_meta.and_then(|m| m.effort_normalization);
     let supports_acp_native = runtime_meta.is_some_and(|m| m.supports_acp_native_config);
     let required_fields: &[&str] = runtime_meta
         .map(|m| m.required_normalized_fields)
@@ -93,6 +97,7 @@ pub(crate) fn read_config_surface(
             &acp_effort,
             effort_option.map(|o| o.config_id.as_str()),
             thinking_env_var,
+            effort_norm,
             is_pre_spawn,
             tiers,
         ),
@@ -542,40 +547,85 @@ fn build_thinking_field(
     acp_effort: &Option<String>,
     effort_config_id: Option<&str>,
     thinking_env_var: Option<&str>,
+    effort_norm: Option<&'static EffortNormalization>,
     is_pre_spawn: bool,
     tiers: &InheritedConfigTiers,
 ) -> Option<NormalizedField> {
-    // Tier ordering:
-    //   record env > record.effort_level (canonical Buzz-persisted) > ACP >
-    //   persona env > global env > definition env > config file.
+    // Tier ordering (mirrors the launch projection in `config_bridge::effort`,
+    // plus the two reader-only tiers the projection has no input for — live ACP
+    // and the on-disk config file):
+    //   record native > canonical column > record legacy > ACP >
+    //   persona > global > definition > config file.
     //
-    // `record.effort_level` is the B5 canonical value: the effort a spawn will
-    // actually apply at next session start (via `apply_effort_env`). Sitting it
-    // above ACP means the panel shows the *configured* value the agent will
-    // launch with rather than a stale live-session reading — the record can't
-    // be masked by, nor mask, the running value silently.
-    let [rec_env, pers_env, glob_env, def_env] = thinking_env_var
-        .map(|k| {
-            env_candidates(
-                k,
-                &record.env_vars,
-                &tiers.persona_env,
-                &tiers.global_env,
-                &tiers.definition_env,
-            )
-        })
-        .unwrap_or([None, None, None, None]);
+    // Every candidate is normalized through the runtime's declared contract
+    // (`effort_norm`) before validity, precedence, override tracking, and the B
+    // same-value collapse — the SAME normalizer the launch projection applies —
+    // so the panel and the next spawn resolve one effective value AND authority.
+    // For contract runtimes an invalid value (e.g. Goose `minimal`) normalizes
+    // to `None` and is skipped as absent so a lower tier can win; aliases
+    // (`none`→`off`, `xhigh`→`max`, case-fold) canonicalize. Contract-less
+    // runtimes (buzz-agent, Claude/Codex column) pass raw.
+    let norm = |raw: &str| -> Option<String> {
+        match effort_norm {
+            Some(c) => c.normalize_str(raw),
+            None => Some(raw.to_string()),
+        }
+    };
 
-    let canonical_effort = record.effort_level.as_deref();
+    // Record tiers, split exactly as the projection resolves them: native env
+    // strictly above the canonical column, legacy env strictly below it.
+    let rec_native = thinking_env_var
+        .and_then(|k| record.env_vars.get(k))
+        .and_then(|v| norm(v));
+    let column = record.effort_level.as_deref().and_then(&norm);
+    let rec_legacy = thinking_env_var
+        .filter(|k| *k != LEGACY_THINKING_EFFORT_KEY)
+        .and_then(|_| record.env_vars.get(LEGACY_THINKING_EFFORT_KEY))
+        .and_then(|v| norm(v));
+
+    // Inherited env tiers: persona resolves native-then-legacy; global and
+    // definition are native-only (legacy alias excluded), matching the launch
+    // projection's per-tier alias policy.
+    let pers = thinking_env_var.and_then(|k| effort_tier_alias(&tiers.persona_env, k, norm, true));
+    let glob = thinking_env_var.and_then(|k| effort_tier_alias(&tiers.global_env, k, norm, false));
+    let def =
+        thinking_env_var.and_then(|k| effort_tier_alias(&tiers.definition_env, k, norm, false));
+    let file = file_effort.as_deref().and_then(&norm);
+
+    // Live ACP value, normalized (invalid → skip as absent). The matched
+    // `config_id` is preserved for `write_via` regardless of value validity.
+    let acp_norm = acp_effort.as_deref().and_then(norm);
+
+    // B same-value collapse: when NO record-level authority exists and the live
+    // ACP value exactly equals what inheritance would already resolve to, drop
+    // ACP so the panel shows the true baseline origin ("Global default") rather
+    // than a spurious "Runtime override (this session only)" — the session is
+    // almost certainly echoing what spawn injected. When a record tier is
+    // present it wins over ACP anyway, so ACP stays only for override tracking.
+    let record_present = rec_native.is_some() || column.is_some() || rec_legacy.is_some();
+    let baseline_first = [
+        pers.as_deref(),
+        glob.as_deref(),
+        def.as_deref(),
+        file.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .next();
+    let acp_for_list = match (record_present, acp_norm.as_deref(), baseline_first) {
+        (false, Some(a), Some(b)) if a == b => None,
+        _ => acp_norm.as_deref(),
+    };
 
     let tiers_list: &[(Option<&str>, ConfigOrigin)] = &[
-        (rec_env, ConfigOrigin::BuzzExplicit),
-        (canonical_effort, ConfigOrigin::BuzzExplicit),
-        (acp_effort.as_deref(), ConfigOrigin::AcpConfigOption),
-        (pers_env, ConfigOrigin::PersonaDefault),
-        (glob_env, ConfigOrigin::GlobalDefault),
-        (def_env, ConfigOrigin::HarnessDefault),
-        (file_effort.as_deref(), ConfigOrigin::ConfigFile),
+        (rec_native.as_deref(), ConfigOrigin::BuzzExplicit),
+        (column.as_deref(), ConfigOrigin::BuzzExplicit),
+        (rec_legacy.as_deref(), ConfigOrigin::BuzzExplicit),
+        (acp_for_list, ConfigOrigin::AcpConfigOption),
+        (pers.as_deref(), ConfigOrigin::PersonaDefault),
+        (glob.as_deref(), ConfigOrigin::GlobalDefault),
+        (def.as_deref(), ConfigOrigin::HarnessDefault),
+        (file.as_deref(), ConfigOrigin::ConfigFile),
     ];
     let (value, origin, overridden_value, overridden_origin) = resolve_with_override(tiers_list)?;
 
