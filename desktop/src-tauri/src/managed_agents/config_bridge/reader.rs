@@ -131,7 +131,7 @@ pub(crate) fn read_config_surface(
         .collect();
 
     // Collect the env var keys already covered by normalized fields.
-    let normalized_env_keys: Vec<&str> = [
+    let mut normalized_env_keys: Vec<&str> = [
         model_env_var,
         provider_env_var,
         thinking_env_var,
@@ -142,6 +142,31 @@ pub(crate) fn read_config_surface(
     .into_iter()
     .flatten()
     .collect();
+
+    // Hide the legacy effort key from advanced only when the record tier
+    // actually consumed it as effort — i.e. the native record key is
+    // absent/invalid and the legacy value normalizes. Otherwise
+    // `build_thinking_field` surfaces the consumed value AND the advanced loop
+    // re-emits the same key as a generic env var (double-emit). Invalid or
+    // unconsumed legacy values stay visible in advanced.
+    let record_legacy_consumed = thinking_env_var
+        .zip(effort_norm)
+        .is_some_and(|(native, norm)| {
+            native != LEGACY_THINKING_EFFORT_KEY
+                && record
+                    .env_vars
+                    .get(native)
+                    .and_then(|v| norm.normalize_str(v))
+                    .is_none()
+                && record
+                    .env_vars
+                    .get(LEGACY_THINKING_EFFORT_KEY)
+                    .and_then(|v| norm.normalize_str(v))
+                    .is_some()
+        });
+    if record_legacy_consumed {
+        normalized_env_keys.push(LEGACY_THINKING_EFFORT_KEY);
+    }
 
     // Tier 2a: remaining env vars not covered by normalized fields.
     let mut advanced = advanced;
@@ -796,11 +821,20 @@ fn find_config_option_value(cache: &SessionConfigCache, category: &str) -> Optio
 /// config id (Claude Code uses `id="effort"`). Selecting by category — not by
 /// a hardcoded id — is what lets the running value, the write config id, and
 /// the picker options all derive from one entry.
+///
+/// `thought_level` is preferred; the legacy invented category `effort` is a
+/// fallback for old test fixtures and pre-canonical adapters. The fallback
+/// fires only when `thought_level` is entirely absent — an advertised-but-unset
+/// `thought_level` entry is still returned (its `current_value` is `None`), so
+/// the reader never flips write-routing to the legacy `effort` config id.
 fn find_effort_option(cache: &SessionConfigCache) -> Option<&AcpConfigOptionEntry> {
-    cache
-        .config_options
-        .iter()
-        .find(|o| o.category.as_deref() == Some("thought_level"))
+    let by_category = |category: &str| {
+        cache
+            .config_options
+            .iter()
+            .find(|o| o.category.as_deref() == Some(category))
+    };
+    by_category("thought_level").or_else(|| by_category("effort"))
 }
 
 fn has_config_option(cache: Option<&SessionConfigCache>, category: &str) -> bool {

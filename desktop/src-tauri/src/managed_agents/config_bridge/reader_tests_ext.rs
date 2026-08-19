@@ -792,3 +792,158 @@ fn goose_invalid_acp_skips_and_record_wins() {
         Some("high")
     );
 }
+
+// ── Consumed-legacy Advanced suppression (F2) ────────────────────────────────
+//
+// When the record's native effort key is absent/invalid and the legacy key
+// (`BUZZ_AGENT_THINKING_EFFORT`) supplies the normalized record effort, the
+// legacy key must NOT also re-appear as a generic Advanced field — one
+// persisted fact must not surface through two controls. Invalid/unconsumed
+// legacy values stay visible in Advanced.
+
+/// Record has valid legacy `BUZZ_AGENT_THINKING_EFFORT=high` and no native
+/// `GOOSE_THINKING_EFFORT` → effort surfaces from the legacy alias AND the
+/// legacy key must NOT re-appear in Advanced.
+#[test]
+fn record_consumed_legacy_effort_hidden_from_advanced_reader() {
+    let mut record = test_record();
+    record
+        .env_vars
+        .insert("BUZZ_AGENT_THINKING_EFFORT".to_string(), "high".to_string());
+    let runtime = test_runtime(); // Goose (native GOOSE_THINKING_EFFORT)
+
+    let surface = with_goose_path_root(Some("/nonexistent"), || {
+        read_config_surface(&record, Some(runtime), None, &no_tiers(), None)
+    });
+
+    let effort = surface
+        .normalized
+        .thinking_effort
+        .expect("valid legacy value must surface as effort via record-tier alias");
+    assert_eq!(effort.value.as_deref(), Some("high"));
+
+    let advanced_keys: Vec<&str> = surface.advanced.iter().map(|f| f.key.as_str()).collect();
+    assert!(
+        !advanced_keys.contains(&"BUZZ_AGENT_THINKING_EFFORT"),
+        "consumed legacy effort key must not double-emit in advanced; got {advanced_keys:?}"
+    );
+}
+
+/// Record has invalid legacy `BUZZ_AGENT_THINKING_EFFORT=bogus` (not a valid
+/// Goose value) → not consumed as effort, so it must stay VISIBLE in Advanced.
+#[test]
+fn record_invalid_legacy_effort_stays_visible_in_advanced_reader() {
+    let mut record = test_record();
+    record.env_vars.insert(
+        "BUZZ_AGENT_THINKING_EFFORT".to_string(),
+        "bogus".to_string(),
+    );
+    let runtime = test_runtime(); // Goose
+
+    let surface = with_goose_path_root(Some("/nonexistent"), || {
+        read_config_surface(&record, Some(runtime), None, &no_tiers(), None)
+    });
+
+    assert!(
+        surface.normalized.thinking_effort.is_none(),
+        "invalid legacy value must not be consumed as effort"
+    );
+    let advanced_keys: Vec<&str> = surface.advanced.iter().map(|f| f.key.as_str()).collect();
+    assert!(
+        advanced_keys.contains(&"BUZZ_AGENT_THINKING_EFFORT"),
+        "unconsumed legacy key must stay visible in advanced; got {advanced_keys:?}"
+    );
+}
+
+// ── F4: legacy `effort` category fallback in find_effort_option ──────────────
+//
+// `thought_level` is preferred; the legacy invented category `effort` is a
+// fallback for pre-canonical adapters. An advertised-but-unset `thought_level`
+// must NOT fall through to a set `effort` (that would route the write to the
+// wrong config_id), but a cache that advertises only `effort` must still
+// surface a thinking field and write route.
+
+/// `thought_level` present but unset, `effort` present and set → effort must
+/// NOT surface from the live cache (no fallthrough); write routing never picks
+/// up the legacy `effort` config id.
+#[test]
+fn unset_thought_level_does_not_fall_through_to_effort_category() {
+    let record = test_record();
+    let runtime = test_runtime(); // Goose
+    let cache = SessionConfigCache {
+        config_options: vec![
+            AcpConfigOptionEntry {
+                config_id: "thinking_effort".to_string(),
+                category: Some("thought_level".to_string()),
+                display_name: Some("Thinking Effort".to_string()),
+                current_value: None, // advertised but unset
+                options: vec![],
+            },
+            AcpConfigOptionEntry {
+                config_id: "effort".to_string(),
+                category: Some("effort".to_string()),
+                display_name: Some("Effort (legacy)".to_string()),
+                current_value: Some("low".to_string()),
+                options: vec![],
+            },
+        ],
+        available_modes: vec![],
+        available_models: vec![],
+        current_model: None,
+        model_overridden: false,
+        goose_native_config: None,
+        captured_at: "".to_string(),
+    };
+
+    let surface = with_goose_path_root(Some("/nonexistent"), || {
+        read_config_surface(&record, Some(runtime), Some(&cache), &no_tiers(), None)
+    });
+
+    assert!(
+        surface.normalized.thinking_effort.is_none(),
+        "unset thought_level must not fall through to the legacy effort category"
+    );
+}
+
+/// `effort` category present and set, no `thought_level` at all → legacy
+/// fallback still surfaces the field and routes the write to the matched
+/// `effort` config id.
+#[test]
+fn effort_category_fallback_used_when_thought_level_absent() {
+    let record = test_record();
+    let runtime = test_runtime(); // Goose
+    let cache = SessionConfigCache {
+        config_options: vec![AcpConfigOptionEntry {
+            config_id: "effort".to_string(),
+            category: Some("effort".to_string()),
+            display_name: Some("Effort (legacy)".to_string()),
+            current_value: Some("high".to_string()),
+            options: vec![],
+        }],
+        available_modes: vec![],
+        available_models: vec![],
+        current_model: None,
+        model_overridden: false,
+        goose_native_config: None,
+        captured_at: "".to_string(),
+    };
+
+    let surface = with_goose_path_root(Some("/nonexistent"), || {
+        read_config_surface(&record, Some(runtime), Some(&cache), &no_tiers(), None)
+    });
+
+    let effort = surface
+        .normalized
+        .thinking_effort
+        .expect("legacy effort category must surface when thought_level is absent");
+    assert_eq!(effort.value.as_deref(), Some("high"));
+    assert!(
+        matches!(
+            &effort.write_via,
+            ConfigWriteMechanism::AcpSetConfigOption { config_id }
+                if config_id == "effort"
+        ),
+        "write route must use the legacy effort config_id when it is the only category; got {:?}",
+        effort.write_via
+    );
+}
