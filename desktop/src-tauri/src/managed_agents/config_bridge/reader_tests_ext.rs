@@ -829,8 +829,36 @@ fn record_consumed_legacy_effort_hidden_from_advanced_reader() {
     );
 }
 
-/// Record has invalid legacy `BUZZ_AGENT_THINKING_EFFORT=bogus` (not a valid
-/// Goose value) → not consumed as effort, so it must stay VISIBLE in Advanced.
+/// A valid legacy value shadowed by the canonical column is not consumed, so
+/// it remains editable in Advanced rather than silently resurfacing later if
+/// the column is cleared.
+#[test]
+fn record_legacy_effort_shadowed_by_column_stays_visible_in_advanced_reader() {
+    let mut record = test_record();
+    record.effort_level = Some("high".to_string());
+    record
+        .env_vars
+        .insert("BUZZ_AGENT_THINKING_EFFORT".to_string(), "low".to_string());
+    let runtime = test_runtime(); // Goose
+
+    let surface = with_goose_path_root(Some("/nonexistent"), || {
+        read_config_surface(&record, Some(runtime), None, &no_tiers(), None)
+    });
+
+    let effort = surface
+        .normalized
+        .thinking_effort
+        .expect("canonical column must win over legacy record effort");
+    assert_eq!(effort.value.as_deref(), Some("high"));
+    let advanced_keys: Vec<&str> = surface.advanced.iter().map(|f| f.key.as_str()).collect();
+    assert!(
+        advanced_keys.contains(&"BUZZ_AGENT_THINKING_EFFORT"),
+        "valid but unconsumed record legacy must remain visible in Advanced; got {advanced_keys:?}"
+    );
+}
+
+/// An invalid legacy `BUZZ_AGENT_THINKING_EFFORT` value is unconsumed, so it
+/// stays visible in Advanced.
 #[test]
 fn record_invalid_legacy_effort_stays_visible_in_advanced_reader() {
     let mut record = test_record();

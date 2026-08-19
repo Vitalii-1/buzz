@@ -143,12 +143,10 @@ pub(crate) fn read_config_surface(
     .flatten()
     .collect();
 
-    // Hide the legacy effort key from advanced only when the record tier
-    // actually consumed it as effort — i.e. the native record key is
-    // absent/invalid and the legacy value normalizes. Otherwise
-    // `build_thinking_field` surfaces the consumed value AND the advanced loop
-    // re-emits the same key as a generic env var (double-emit). Invalid or
-    // unconsumed legacy values stay visible in advanced.
+    // Hide the legacy effort key from advanced only when it actually wins the
+    // record tier: native and canonical column are absent/invalid, then legacy
+    // normalizes. Otherwise `build_thinking_field` represents another winner
+    // and the legacy key stays editable in Advanced.
     let record_legacy_consumed = thinking_env_var
         .zip(effort_norm)
         .is_some_and(|(native, norm)| {
@@ -156,6 +154,11 @@ pub(crate) fn read_config_surface(
                 && record
                     .env_vars
                     .get(native)
+                    .and_then(|v| norm.normalize_str(v))
+                    .is_none()
+                && record
+                    .effort_level
+                    .as_deref()
                     .and_then(|v| norm.normalize_str(v))
                     .is_none()
                 && record
