@@ -20,9 +20,13 @@ export function parsePromptText(text: string): {
   userPubkey: string | null;
   userEventId: string | null;
 } {
-  const sections = parsePromptSections(text).filter(
-    (s) => s.body.trim().length > 0,
-  );
+  const semanticPrefix = splitSemanticStandingPrefix(text);
+  const semanticTurn = splitSemanticTurnSections(semanticPrefix.remainder);
+  const sections = [
+    ...semanticPrefix.sections,
+    ...semanticTurn.sections,
+    ...parsePromptSections(semanticTurn.remainder),
+  ].filter((s) => s.body.trim().length > 0);
   if (sections.length === 0) {
     return {
       sections: [],
@@ -56,11 +60,11 @@ export function parsePromptText(text: string): {
 }
 
 /**
- * Split the framed `session/new` `systemPrompt` into its `Base`/`Agent Instructions`/
- * `Team Instructions`/`Core Memory`/`Channel Canvas` sub-sections
- * deterministically.
+ * Split `session/new`'s paired standing-context tags into transcript sections.
+ * The bracket parser is retained below for observer history captured before
+ * the framing experiment.
  *
- * The harness composes the value in order:
+ * Archived harness versions composed the value in order:
  *   `[Base]\n{base}\n\n[Agent Instructions]\n{persona}\n\n[Team Instructions]\n{team}\n\n[Agent Memory — core]\n{core}\n\n[Channel Canvas]\n{canvas}`
  * with any section omitted when absent. Extraction runs in reverse producer
  * order so that each `lastIndexOf` search operates on the full input and each
@@ -99,6 +103,9 @@ export function parsePromptText(text: string): {
 export function parseSystemPromptSections(
   systemPrompt: string,
 ): PromptSection[] {
+  const semantic = parseSemanticStandingSections(systemPrompt);
+  if (semantic) return semantic;
+
   const sections: PromptSection[] = [];
 
   // ── 1. Extract [Channel Canvas] ───────────────────────────────────────────
@@ -275,6 +282,178 @@ export function parseSystemPromptSections(
   if (canvasBody) sections.push({ title: "Channel Canvas", body: canvasBody });
 
   return sections;
+}
+
+/**
+ * Split current paired-tag standing context while retaining the bracket parser
+ * below for observer history captured before the framing experiment.
+ */
+function parseSemanticStandingSections(
+  systemPrompt: string,
+): PromptSection[] | null {
+  const titles: Record<string, string> = {
+    workspace: "Workspace",
+    base: "Base",
+    system: "System",
+    "team-instructions": "Team Instructions",
+    "core-memory": "Core Memory",
+    "huddle-instructions": "Huddle Instructions",
+    "channel-canvas": "Channel Canvas",
+  };
+  const tags = Object.keys(titles).join("|");
+  if (hasAmbiguousSemanticBoundary(systemPrompt, Object.keys(titles))) {
+    return [{ title: "Prompt", body: systemPrompt }];
+  }
+  const matches = Array.from(
+    systemPrompt.matchAll(new RegExp(`<(${tags})>([\\s\\S]*?)<\\/\\1>`, "g")),
+  );
+  if (!matches.length) return null;
+  return matches.map((match) => ({
+    title: titles[match[1]],
+    body: stripSemanticBoundaryNewlines(match[2]),
+  }));
+}
+
+function splitSemanticStandingPrefix(text: string): {
+  sections: PromptSection[];
+  remainder: string;
+} {
+  const sections: PromptSection[] = [];
+  let remainder = text;
+  const tags = [
+    "workspace",
+    "base",
+    "system",
+    "team-instructions",
+    "core-memory",
+    "huddle-instructions",
+    "channel-canvas",
+  ].join("|");
+  const titles: Record<string, string> = {
+    workspace: "Workspace",
+    base: "Base",
+    system: "System",
+    "team-instructions": "Team Instructions",
+    "core-memory": "Core Memory",
+    "huddle-instructions": "Huddle Instructions",
+    "channel-canvas": "Channel Canvas",
+  };
+  if (hasAmbiguousSemanticBoundary(text, Object.keys(titles))) {
+    return { sections, remainder: text };
+  }
+  const leadingSection = new RegExp(`^\\s*<(${tags})>([\\s\\S]*?)<\\/\\1>\\s*`);
+
+  for (;;) {
+    const match = remainder.match(leadingSection);
+    if (!match) break;
+    sections.push({
+      title: titles[match[1]],
+      body: stripSemanticBoundaryNewlines(match[2]),
+    });
+    remainder = remainder.slice(match[0].length);
+  }
+  return { sections, remainder };
+}
+
+function hasAmbiguousSemanticBoundary(value: string, tags: string[]): boolean {
+  return tags.some((tag) => {
+    const openingCount = Array.from(
+      value.matchAll(new RegExp(`<${tag}(?:\\s[^>]*)?>`, "g")),
+    ).length;
+    const closingCount = value.split(`</${tag}>`).length - 1;
+    return openingCount !== closingCount || openingCount > 1;
+  });
+}
+
+function splitSemanticTurnSections(text: string): {
+  sections: PromptSection[];
+  remainder: string;
+} {
+  const sections: PromptSection[] = [];
+  let remainder = text;
+  const tags = [
+    "context",
+    "thread-context",
+    "conversation-context",
+    "buzz-event",
+    "buzz-events",
+    "what-you-were-working-on",
+    "new-message-arrived-while-you-were-working",
+    "previous-request-interrupted-before-completion",
+    "new-request-supersedes-previous",
+  ];
+  if (hasAmbiguousSemanticBoundary(text, tags)) {
+    return { sections, remainder: text };
+  }
+  const leadingSection = new RegExp(
+    `^\\s*<(${tags.join("|")})([^>]*)>([\\s\\S]*?)<\\/\\1>\\s*`,
+  );
+
+  for (;;) {
+    const match = remainder.match(leadingSection);
+    if (!match) break;
+    sections.push({
+      title: semanticTurnTitle(match[1], parseSemanticAttributes(match[2])),
+      body: stripSemanticBoundaryNewlines(match[3]),
+    });
+    remainder = remainder.slice(match[0].length);
+  }
+  return { sections, remainder };
+}
+
+function parseSemanticAttributes(raw: string): Record<string, string> {
+  return Object.fromEntries(
+    Array.from(raw.matchAll(/([a-z-]+)="([^"]*)"/g), ([, name, value]) => [
+      name,
+      decodeSemanticAttribute(value),
+    ]),
+  );
+}
+
+function decodeSemanticAttribute(value: string): string {
+  return value
+    .replaceAll("&quot;", '"')
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+function semanticTurnTitle(
+  tag: string,
+  attributes: Record<string, string>,
+): string {
+  switch (tag) {
+    case "context":
+      return "Context";
+    case "thread-context":
+    case "conversation-context": {
+      const label =
+        tag === "thread-context" ? "Thread Context" : "Conversation Context";
+      const truncated = attributes.truncated === "true" ? ", truncated" : "";
+      return `${label} (${attributes.included} of ${attributes.total} messages${truncated})`;
+    }
+    case "buzz-event":
+      return attributes.type ? `Buzz event: ${attributes.type}` : "Buzz event";
+    case "buzz-events":
+      return `Buzz events — ${attributes.count} events`;
+    case "what-you-were-working-on":
+      return "What you were working on";
+    case "new-message-arrived-while-you-were-working":
+      return "New message — arrived while you were working";
+    case "previous-request-interrupted-before-completion":
+      return "Previous request — interrupted before completion";
+    case "new-request-supersedes-previous":
+      return "New request — supersedes previous";
+    default:
+      return tag;
+  }
+}
+
+function stripSemanticBoundaryNewlines(value: string): string {
+  const withoutOpeningNewline = value.startsWith("\n") ? value.slice(1) : value;
+  return withoutOpeningNewline.endsWith("\n")
+    ? withoutOpeningNewline.slice(0, -1)
+    : withoutOpeningNewline;
 }
 
 function parsePromptSections(text: string): PromptSection[] {
