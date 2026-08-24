@@ -2524,7 +2524,7 @@ mod track_c_tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres and MinIO"]
-    async fn finalize_push_holds_serving_lease_through_post_cas_publication() {
+    async fn external_infra_finalize_push_holds_serving_lease_through_post_cas_publication() {
         let (state, pool) = finalize_test_state().await;
         let host = format!("git-finalize-{}.example", uuid::Uuid::new_v4().simple());
         let community = state
@@ -2617,7 +2617,7 @@ mod track_c_tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres and MinIO"]
-    async fn finalize_push_db_failure_after_cas_is_not_success_and_releases_lease() {
+    async fn external_infra_finalize_push_db_failure_after_cas_is_not_success_and_releases_lease() {
         let (state, pool) = finalize_test_state().await;
         let host = format!(
             "git-finalize-fail-{}.example",
@@ -3169,7 +3169,7 @@ mod track_c_tests {
 }
 
 #[cfg(test)]
-mod sec005_read_gate_tests {
+mod sec005_postgres_tests {
     use super::*;
     use nostr::{EventBuilder, Keys, Kind, Tag};
 

@@ -789,7 +789,7 @@ pub async fn run_probe(writer: PgPool, fence: Arc<ReplicaFence>) {
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
 
     const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1
@@ -973,8 +973,11 @@ mod tests {
     /// sessions, per the agreed classification.
     #[tokio::test]
     #[ignore = "requires Postgres"]
-    async fn sample_writer_sees_open_transactions_and_ignores_idle() {
+    async fn migration_schema_sample_writer_sees_open_transactions_and_ignores_idle() {
         let pool = PgPool::connect(&test_db_url()).await.expect("connect");
+        crate::migration::run_migrations(&pool)
+            .await
+            .expect("apply migration schema");
 
         // A plain idle session: pinned connection, no transaction.
         let idle_pool = PgPool::connect(&test_db_url()).await.expect("connect idle");

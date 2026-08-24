@@ -1269,7 +1269,7 @@ pub async fn find_by_owner_and_name(
 // -- Tests --------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use chrono::TimeZone;
 

@@ -1279,7 +1279,7 @@ fn row_to_claimed_wake(row: sqlx::postgres::PgRow) -> Result<ClaimedWake> {
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use crate::migration;
     use std::sync::Arc;
@@ -1292,9 +1292,11 @@ mod tests {
         let pool = PgPool::connect(&database_url)
             .await
             .expect("connect to test DB");
-        migration::run_migrations(&pool)
-            .await
-            .expect("run migrations");
+        if std::env::var("BUZZ_TEST_SCHEMA_MODE").as_deref() != Ok("desired") {
+            migration::run_migrations(&pool)
+                .await
+                .expect("run migrations");
+        }
         pool
     }
 

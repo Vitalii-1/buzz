@@ -628,7 +628,7 @@ fn row_to_action(row: sqlx::postgres::PgRow) -> Result<ActionRecord> {
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use chrono::Duration;
     use uuid::Uuid;

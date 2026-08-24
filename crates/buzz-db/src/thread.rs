@@ -857,7 +857,7 @@ pub async fn get_thread_metadata_by_event(
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use crate::{
         channel::{ChannelType, ChannelVisibility},

@@ -1599,7 +1599,7 @@ fn print_json(value: &impl Serialize) -> Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
 
     #[test]
@@ -1657,7 +1657,9 @@ mod tests {
             .await
             .expect("connect deletion engine test DB");
         let db = Db::from_pool(pool);
-        db.migrate().await.expect("migrate deletion engine test DB");
+        if std::env::var("BUZZ_TEST_SCHEMA_MODE").as_deref() != Ok("desired") {
+            db.migrate().await.expect("migrate deletion engine test DB");
+        }
         let store = db.deletion_store();
         let host = format!("{prefix}-{}.example", Uuid::new_v4().simple());
         let community = db
@@ -1879,7 +1881,7 @@ mod tests {
     /// finish the stage.
     #[tokio::test]
     #[ignore = "requires Postgres and S3-compatible storage"]
-    async fn drained_stage_resumes_chunk_deleted_before_stamp() {
+    async fn external_infra_drained_stage_resumes_chunk_deleted_before_stamp() {
         let (_, mut services, claim) = claimed_test_deletion("deletion-chunk-resume").await;
         services.media = deletion_test_media_storage();
         let community = claim.request.community_id;
@@ -2135,7 +2137,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres and S3-compatible storage"]
-    async fn final_storage_verification_rejects_late_target_binding() {
+    async fn external_infra_final_storage_verification_rejects_late_target_binding() {
         let (_, mut services, claim) = claimed_test_deletion("deletion-late-binding").await;
         services.media = deletion_test_media_storage();
         let community = claim.request.community_id;
@@ -2256,7 +2258,9 @@ mod tests {
             .await
             .expect("connect serving guard test DB");
         let db = Db::from_pool(pool.clone());
-        db.migrate().await.expect("migrate serving guard test DB");
+        if std::env::var("BUZZ_TEST_SCHEMA_MODE").as_deref() != Ok("desired") {
+            db.migrate().await.expect("migrate serving guard test DB");
+        }
         let community = db
             .ensure_configured_community(&format!(
                 "serving-guard-{}.example",

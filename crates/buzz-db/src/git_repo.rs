@@ -180,7 +180,7 @@ pub async fn release_repo_name(
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use uuid::Uuid;
 

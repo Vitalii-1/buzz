@@ -215,6 +215,49 @@ connections, NIP-42 auth, event ingestion, search indexing, and workflow
 execution. `just test` starts Docker services automatically if they're not
 already running.
 
+### PostgreSQL-backed tests
+
+PostgreSQL-only tests run in a dedicated nextest lane. To make a test
+discoverable, mark it ignored with a PostgreSQL reason and place it in a module
+named `postgres_tests`. Standalone integration-test targets use a `postgres_`
+filename prefix instead. Tests that also require infrastructure beyond
+PostgreSQL and Redis use an `external_infra_` test-name prefix and are excluded
+from this lane.
+
+The `postgres-ci` nextest profile creates one database per test process, so
+destructive and concurrent tests must use the database URL supplied through
+`BUZZ_TEST_DATABASE_URL`, `TEST_DATABASE_URL`, or `DATABASE_URL`; do not
+hard-code the shared development database. Ordinary tests receive the committed
+desired-state schema from `schema/schema.sql`. Tests under
+`migration::postgres_tests` receive an empty database and own the embedded
+migration lifecycle. A test outside that module whose behavior intentionally
+depends on migration-created triggers or seed rows uses a
+`migration_schema_` function-name prefix and also receives an empty database
+with `BUZZ_TEST_SCHEMA_MODE=migration`. Test helpers that normally call the
+migrator honor `BUZZ_TEST_SCHEMA_MODE=desired` so the desired-state contract is
+not re-migrated.
+
+The setup process requires a PostgreSQL role that can create and drop databases
+and owns the databases it creates; the harness itself does not require
+superuser access. The complete inventory includes privilege-boundary tests that
+create temporary roles and inspect all sessions, so grant that role
+`CREATEROLE` and membership in `pg_read_all_stats` (or use an ephemeral
+superuser, as CI does).
+Set `BUZZ_POSTGRES_ADMIN_URL` to that role's maintenance database, and set
+`PGHOST`, `PGPORT`, `PGUSER`, and `PGPASSWORD` for the desired-state
+schema bootstrap. PostgreSQL client tools are resolved from `PATH` unless
+`PG_BIN_DIR` is set. Tests that use Redis read `REDIS_URL`.
+
+With native PostgreSQL and Redis running, the complete lane is below. The
+runner bounds compilation to the seven PostgreSQL-backed packages used in CI
+and removes the run-scoped desired-state source database on exit.
+Per-test and source-database cleanup retries transient PostgreSQL disconnect
+races and emits a warning if all five attempts fail.
+
+```bash
+./scripts/postgres-test-run.sh
+```
+
 ### End-to-End Tests
 
 End-to-end tests live in `crates/buzz-test-client/tests/`:

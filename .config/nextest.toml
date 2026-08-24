@@ -1,0 +1,22 @@
+nextest-version = "0.9.136"
+experimental = ["setup-scripts", "wrapper-scripts"]
+
+[scripts.setup.postgres-template]
+command = { command-line = "scripts/postgres-test-setup.sh", relative-to = "workspace-root" }
+slow-timeout = "60s"
+
+[scripts.wrapper.postgres-isolation]
+command = { command-line = "scripts/postgres-test-wrapper.sh", relative-to = "workspace-root" }
+
+[profile.postgres-ci]
+default-filter = """
+(test(/postgres_tests::/) or binary(/^postgres_/))
+and not test(/external_infra_/)
+"""
+fail-fast = false
+test-threads = 8
+
+[[profile.postgres-ci.scripts]]
+filter = "(test(/postgres_tests::/) or binary(/^postgres_/)) and not test(/external_infra_/)"
+setup = "postgres-template"
+run-wrapper = "postgres-isolation"

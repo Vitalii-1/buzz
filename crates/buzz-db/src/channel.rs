@@ -1908,7 +1908,7 @@ pub async fn reap_expired_ephemeral_channels(pool: &PgPool) -> Result<Vec<Reaped
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use crate::user::{ensure_user, set_agent_owner};
     use nostr::Keys;
@@ -1916,8 +1916,14 @@ mod tests {
 
     const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1 -- local test-only credentials
 
+    fn test_database_url() -> String {
+        std::env::var("BUZZ_TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .unwrap_or_else(|_| TEST_DB_URL.to_owned())
+    }
+
     async fn setup_pool() -> PgPool {
-        PgPool::connect(TEST_DB_URL)
+        PgPool::connect(&test_database_url())
             .await
             .expect("connect to test DB")
     }
@@ -2432,13 +2438,31 @@ mod tests {
         .await
         .expect("insert large roster");
 
+        let creator_hex = hex::encode(&creator);
         let stale_tags: Vec<serde_json::Value> =
             std::iter::once(serde_json::json!(["d", channel.id.to_string()]))
-                .chain((0..1_000).map(|n| serde_json::json!(["p", format!("{n:064x}")])))
+                .chain(std::iter::once(serde_json::json!([
+                    "p",
+                    creator_hex,
+                    "",
+                    "owner"
+                ])))
+                .chain(
+                    (1..1_000).map(|n| serde_json::json!(["p", format!("{n:064x}"), "", "member"])),
+                )
                 .collect();
         let complete_tags: Vec<serde_json::Value> =
             std::iter::once(serde_json::json!(["d", channel.id.to_string()]))
-                .chain((0..1_501).map(|n| serde_json::json!(["p", format!("{n:064x}")])))
+                .chain(std::iter::once(serde_json::json!([
+                    "p",
+                    creator_hex,
+                    "",
+                    "owner"
+                ])))
+                .chain(
+                    (1..=1_500)
+                        .map(|n| serde_json::json!(["p", format!("{n:064x}"), "", "member"])),
+                )
                 .collect();
 
         // Insert canonical-looking history first, then corrupt the newest row
@@ -2497,9 +2521,21 @@ mod tests {
         sqlx::query(
             r#"
             INSERT INTO channel_members (community_id, channel_id, pubkey, role, joined_at)
+            VALUES ($1, $2, $3, 'owner', NOW())
+            "#,
+        )
+        .bind(other_community_id)
+        .bind(channel.id)
+        .bind(&creator)
+        .execute(&pool)
+        .await
+        .expect("insert other-tenant owner");
+        sqlx::query(
+            r#"
+            INSERT INTO channel_members (community_id, channel_id, pubkey, role, joined_at)
             SELECT $1, $2, decode(lpad(to_hex(n), 64, '0'), 'hex'), 'member',
                    NOW() + (n || ' seconds')::interval
-            FROM generate_series(0, 1500) n
+            FROM generate_series(1, 1500) n
             "#,
         )
         .bind(other_community_id)
@@ -3086,7 +3122,7 @@ mod tests {
         let snapshot_pool = PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(1))
-            .connect(TEST_DB_URL)
+            .connect(&test_database_url())
             .await
             .expect("connect one-connection pool");
         let relay_keys = Keys::generate();
@@ -3102,7 +3138,7 @@ mod tests {
         let event = nostr::EventBuilder::new(nostr::Kind::Custom(39002), "")
             .tags(vec![
                 nostr::Tag::parse(["d", &channel.id.to_string()]).expect("d tag"),
-                nostr::Tag::parse(["p", &hex::encode(&owner)]).expect("p tag"),
+                nostr::Tag::parse(["p", &hex::encode(&owner), "", "owner"]).expect("p tag"),
             ])
             .sign_with_keys(&relay_keys)
             .expect("sign roster");

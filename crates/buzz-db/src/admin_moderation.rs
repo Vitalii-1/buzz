@@ -285,7 +285,7 @@ fn row_to_feedback(row: sqlx::postgres::PgRow) -> Result<AdminFeedback> {
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
 
     const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";

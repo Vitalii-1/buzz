@@ -1366,7 +1366,7 @@ async fn resume_workflow_after_approval(
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
     use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp};
 
@@ -1378,9 +1378,11 @@ mod tests {
             .await
             .expect("connect workflow persistence test database");
         let db = buzz_db::Db::from_pool(pool);
-        db.migrate()
-            .await
-            .expect("migrate workflow persistence test database");
+        if std::env::var("BUZZ_TEST_SCHEMA_MODE").as_deref() != Ok("desired") {
+            db.migrate()
+                .await
+                .expect("migrate workflow persistence test database");
+        }
         let host = format!("workflow-cas-{}.example", Uuid::new_v4().simple());
         let community = db
             .ensure_configured_community(&host)

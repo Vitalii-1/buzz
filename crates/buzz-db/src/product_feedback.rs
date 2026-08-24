@@ -118,7 +118,7 @@ pub async fn list(pool: &PgPool, limit: i64) -> Result<Vec<ProductFeedbackRecord
 }
 
 #[cfg(test)]
-mod tests {
+mod postgres_tests {
     use super::*;
 
     #[tokio::test]
