@@ -501,7 +501,6 @@ pub fn spawn_agent_child(
     // The caller supplies the explicit canonical pair relay. This is the only
     // relay this child may connect to, regardless of the record/workspace default.
     let effective_relay_url = runtime_key.relay_url.clone();
-
     // Augment PATH for DMG launches so child processes can find:
     //   - bundled CLI via ~/.local/bin symlink
     //   - nvm-managed node/npm (nvm initializes only in interactive shells)
@@ -536,6 +535,7 @@ pub fn spawn_agent_child(
     command.env("BUZZ_ACP_IDLE_POOL_SLEEP", idle_pool_sleep_env(lazy));
     command.env("BUZZ_ACP_AGENT_COMMAND", &resolved_agent_command);
     command.env("BUZZ_ACP_AGENT_ARGS", agent_args.join(","));
+    crate::build_identity::apply_demo_config_home(&mut command);
     match &resolved_mcp_command {
         Some(mcp_cmd) => {
             command.env("BUZZ_ACP_MCP_COMMAND", mcp_cmd);

@@ -104,6 +104,11 @@ pub(crate) struct ResetContext<'a> {
     pub keychain: &'a dyn ResetKeychain,
     pub home_dir: Option<PathBuf>,
     pub is_dev: bool,
+    /// Build-owned config root for demos. Production leaves this unset.
+    pub demo_config_dir: Option<PathBuf>,
+    /// Demo builds own only build-scoped state and must never delete shared
+    /// production or legacy agent roots.
+    pub is_demo: bool,
 }
 
 /// Entry point called from `lib.rs` setup (before migrations).
@@ -133,6 +138,8 @@ pub(crate) fn run_boot_reset(app_data_dir: &Path) -> ResetOutcome {
         keychain: &store,
         home_dir,
         is_dev,
+        demo_config_dir: crate::build_identity::demo_config_home(),
+        is_demo: crate::build_identity::is_demo_build(),
     };
 
     run_boot_reset_with_keychain(ctx)
@@ -211,13 +218,21 @@ pub(crate) fn run_boot_reset_with_keychain(ctx: ResetContext<'_>) -> ResetOutcom
         None
     };
 
-    // ── Step 3: remove nest, ~/.sprout, ~/.config/buzz-agent, CLI symlink ────
+    // ── Step 3: remove build-owned nest and CLI symlink ──────────────────────
+    // Production and dev preserve their existing legacy/global cleanup. A demo
+    // never owns these shared roots, so signing out of one must leave them
+    // available to production and every other demo.
     if let Some(ref nest) = ctx.nest_dir {
         let _ = std::fs::remove_dir_all(nest);
     }
+    if let Some(ref demo_config_dir) = ctx.demo_config_dir {
+        let _ = std::fs::remove_dir_all(demo_config_dir);
+    }
     if let Some(ref home) = ctx.home_dir {
-        let _ = std::fs::remove_dir_all(home.join(".sprout"));
-        let _ = std::fs::remove_dir_all(home.join(".config").join("buzz-agent"));
+        if !ctx.is_demo {
+            let _ = std::fs::remove_dir_all(home.join(".sprout"));
+            let _ = std::fs::remove_dir_all(home.join(".config").join("buzz-agent"));
+        }
         let link_name = crate::managed_agents::cli_link_name(ctx.is_dev);
         let _ = std::fs::remove_file(home.join(".local").join("bin").join(link_name));
     }
@@ -408,6 +423,8 @@ mod tests {
             keychain,
             home_dir: None, // skip nest/sprout/CLI ops in unit tests
             is_dev,
+            demo_config_dir: None,
+            is_demo: false,
         }
     }
 
@@ -451,6 +468,8 @@ mod tests {
             keychain: &kc,
             home_dir: None,
             is_dev: false,
+            demo_config_dir: None,
+            is_demo: false,
         };
 
         let outcome = run_boot_reset_with_keychain(ctx);
@@ -584,6 +603,8 @@ mod tests {
             keychain: &kc,
             home_dir: None,
             is_dev: true,
+            demo_config_dir: None,
+            is_demo: false,
         };
 
         let outcome = run_boot_reset_with_keychain(ctx);
@@ -620,6 +641,8 @@ mod tests {
             keychain: &kc,
             home_dir: None,
             is_dev: false,
+            demo_config_dir: None,
+            is_demo: false,
         };
 
         let outcome = run_boot_reset_with_keychain(ctx);
@@ -653,6 +676,8 @@ mod tests {
             keychain: &kc,
             home_dir: None,
             is_dev: false,
+            demo_config_dir: None,
+            is_demo: false,
         };
 
         let outcome = run_boot_reset_with_keychain(ctx);
@@ -736,6 +761,8 @@ mod tests {
             keychain: &kc,
             home_dir: None,
             is_dev: true,
+            demo_config_dir: None,
+            is_demo: false,
         };
         let outcome = run_boot_reset_with_keychain(ctx);
         assert!(outcome.completed, "reset must complete");
@@ -808,6 +835,60 @@ mod tests {
     // ── Test 13: keychain-fail restores all dirs, retry cleans trash ──────
 
     #[test]
+    fn test_demo_reset_preserves_shared_and_other_build_state() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path().join("home");
+        let app_data = tmp
+            .path()
+            .join("Application Support")
+            .join("xyz.block.buzz.app.demo.current-1234567812345678");
+        let demo_nest = home.join(".buzz-demo-current-1234567812345678");
+        let prod_nest = home.join(".buzz");
+        let other_demo_nest = home.join(".buzz-demo-other-8765432187654321");
+        let shared_sprout = home.join(".sprout");
+        let shared_agent = home.join(".config").join("buzz-agent");
+        let demo_config = home
+            .join(".config")
+            .join("buzz-demo-current-1234567812345678");
+
+        for path in [
+            &app_data,
+            &demo_nest,
+            &prod_nest,
+            &other_demo_nest,
+            &shared_sprout,
+            &shared_agent,
+            &demo_config,
+        ] {
+            std::fs::create_dir_all(path).unwrap();
+        }
+        write_sentinel(&app_data).unwrap();
+
+        let kc = FakeKeychain::ok();
+        let ctx = ResetContext {
+            app_data_dir: &app_data,
+            legacy_app_data_dir: None,
+            nest_dir: Some(demo_nest.clone()),
+            keychain: &kc,
+            home_dir: Some(home),
+            is_dev: false,
+            demo_config_dir: Some(demo_config.clone()),
+            is_demo: true,
+        };
+
+        let outcome = run_boot_reset_with_keychain(ctx);
+
+        assert!(outcome.completed, "demo reset must complete");
+        assert!(!app_data.exists(), "demo app data must be wiped");
+        assert!(!demo_nest.exists(), "selected demo nest must be wiped");
+        assert!(!demo_config.exists(), "selected demo agent config must be wiped");
+        assert!(prod_nest.exists(), "production nest must survive");
+        assert!(other_demo_nest.exists(), "another demo nest must survive");
+        assert!(shared_sprout.exists(), "shared legacy state must survive");
+        assert!(shared_agent.exists(), "shared agent auth state must survive");
+    }
+
+    #[test]
     fn test_keychain_fail_restores_all_then_retry_cleans() {
         let tmp = TempDir::new().unwrap();
         let app_support = tmp.path().join("Application Support");
@@ -830,6 +911,8 @@ mod tests {
             keychain: &kc1,
             home_dir: Some(tmp.path().to_path_buf()),
             is_dev: false,
+            demo_config_dir: None,
+            is_demo: false,
         };
         let first = run_boot_reset_with_keychain(ctx1);
         assert!(first.failed, "first attempt must fail");
@@ -853,6 +936,8 @@ mod tests {
             keychain: &kc2,
             home_dir: Some(tmp.path().to_path_buf()),
             is_dev: false,
+            demo_config_dir: None,
+            is_demo: false,
         };
         let second = run_boot_reset_with_keychain(ctx2);
         assert!(second.completed, "second attempt must complete");

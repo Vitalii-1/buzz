@@ -278,7 +278,8 @@ desktop-demo-build demo_name target="aarch64-apple-darwin":
     [[ "$(uname -s)" == "Darwin" && "$TARGET" == *-apple-darwin ]] || { echo "Demo DMGs require a macOS Apple target" >&2; exit 2; }
     CONFIG_PATH="$(mktemp "${TMPDIR:-/tmp}/buzz-demo-config.XXXXXX.json")"
     trap 'rm -f "$CONFIG_PATH"' EXIT
-    DEMO_CONFIG="$(node desktop/scripts/demo-build-config.mjs "{{demo_name}}" "$CONFIG_PATH")"
+    DEMO_BUILD_ID="$(node -e 'console.log(require("node:crypto").randomBytes(8).toString("hex"))')"
+    DEMO_CONFIG="$(node desktop/scripts/demo-build-config.mjs {{quote(demo_name)}} "$CONFIG_PATH" "$DEMO_BUILD_ID")"
     read_config() { node -e 'console.log(JSON.parse(process.argv[1])[process.argv[2]])' "$DEMO_CONFIG" "$1"; }
     PRODUCT_NAME="$(read_config productName)"
     DMG_VOLUME_NAME="$(read_config dmgVolumeName)"

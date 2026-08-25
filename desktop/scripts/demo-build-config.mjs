@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
@@ -13,7 +14,10 @@ export const productionBuildIdentity = Object.freeze({
   cliName: "buzz",
 });
 
-export function demoBuildConfig(rawName) {
+export function demoBuildConfig(
+  rawName,
+  buildId = randomBytes(8).toString("hex"),
+) {
   if (typeof rawName !== "string") throw new Error("Demo name must be text");
   const name = rawName.trim().replace(/\s+/g, " ");
   if (!name) throw new Error("Demo name must not be empty");
@@ -28,10 +32,17 @@ export function demoBuildConfig(rawName) {
     );
   }
 
-  const slug = name
+  if (!/^[a-f0-9]{16}$/.test(buildId)) {
+    throw new Error(
+      "Demo build ID must be sixteen lowercase hexadecimal characters",
+    );
+  }
+
+  const readableSlug = name
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+  const slug = `${readableSlug}-${buildId}`;
   const productName = `Buzz ${name}`;
   return {
     name,
@@ -58,7 +69,7 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  const [name, outputPath] = process.argv.slice(2);
+  const [name, outputPath, buildId] = process.argv.slice(2);
   if (!outputPath) {
     console.error(
       "Usage: demo-build-config.mjs <demo-name> <output-config-path>",
@@ -66,7 +77,7 @@ if (
     process.exit(2);
   }
   try {
-    const config = demoBuildConfig(name);
+    const config = demoBuildConfig(name, buildId);
     writeFileSync(
       outputPath,
       `${JSON.stringify(config.tauriConfig, null, 2)}\n`,

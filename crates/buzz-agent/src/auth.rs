@@ -93,8 +93,9 @@ impl TokenSource for StaticTokenSource {
 ///
 /// The `discovery_url` must return a JSON document with at least
 /// `authorization_endpoint` and `token_endpoint` (RFC 8414). The
-/// `cache_namespace` is the directory under `~/.config/buzz-agent/oauth/`
-/// the token JSON lives in — separates providers' caches cleanly.
+/// `cache_namespace` is the directory under the platform config directory's
+/// `buzz-agent/oauth/` root where the token JSON lives — separates providers'
+/// caches cleanly.
 #[derive(Debug, Clone)]
 pub struct PkceOAuthConfig {
     pub discovery_url: String,
@@ -102,7 +103,7 @@ pub struct PkceOAuthConfig {
     pub scopes: Vec<String>,
     pub cache_namespace: String,
     /// When `Some`, the engine writes tokens here instead of
-    /// `~/.config/buzz-agent/oauth/<cache_namespace>/`. Production code
+    /// `<platform config dir>/buzz-agent/oauth/<cache_namespace>/`. Production code
     /// leaves this `None`. Integration tests use it to avoid stomping on
     /// a shared `$HOME` when running in parallel.
     pub cache_dir_override: Option<PathBuf>,
@@ -455,9 +456,8 @@ fn cache_path_for(cfg: &PkceOAuthConfig) -> Result<PathBuf, AgentError> {
 
     let dir = match &cfg.cache_dir_override {
         Some(p) => p.join(&cfg.cache_namespace),
-        None => dirs::home_dir()
-            .ok_or_else(|| AgentError::Llm("oauth cache: home directory not found".into()))?
-            .join(".config")
+        None => dirs::config_dir()
+            .ok_or_else(|| AgentError::Llm("oauth cache: config directory not found".into()))?
             .join("buzz-agent")
             .join("oauth")
             .join(&cfg.cache_namespace),
@@ -862,7 +862,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_path_uses_platform_home_directory() {
+    fn cache_path_uses_platform_config_directory() {
         let cfg = PkceOAuthConfig {
             discovery_url: "https://example.com/.well-known".into(),
             client_id: "abc".into(),
@@ -871,9 +871,8 @@ mod tests {
             cache_dir_override: None,
         };
         let p = cache_path_for(&cfg).unwrap();
-        let expected_dir = dirs::home_dir()
+        let expected_dir = dirs::config_dir()
             .unwrap()
-            .join(".config")
             .join("buzz-agent")
             .join("oauth")
             .join("demo");
