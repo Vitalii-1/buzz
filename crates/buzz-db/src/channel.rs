@@ -2428,6 +2428,9 @@ mod postgres_tests {
         .await
         .expect("insert large roster");
 
+        // Migration 0032's roster guard requires canonical four-field p tags
+        // whose roles exactly match channel_members, including the creator's
+        // owner row created by create_test_channel.
         let creator_hex = hex::encode(&creator);
         let stale_tags: Vec<serde_json::Value> =
             std::iter::once(serde_json::json!(["d", channel.id.to_string()]))
@@ -2450,7 +2453,7 @@ mod postgres_tests {
                     "owner"
                 ])))
                 .chain(
-                    (1..=1_500)
+                    (1..=extra_members)
                         .map(|n| serde_json::json!(["p", format!("{n:064x}"), "", "member"])),
                 )
                 .collect();
@@ -2495,6 +2498,10 @@ mod postgres_tests {
         // The same channel UUID in another tenant is deliberately valid. A
         // complete snapshot there must not mask this tenant's stale head.
         let other_community_id = make_test_community(&pool).await;
+        // Insert directly because create_test_channel generates a fresh UUID,
+        // while this test needs the same channel ID in both tenants. Direct
+        // insertion skips the helper's creator membership, so add the owner
+        // row explicitly below.
         sqlx::query(
             r#"
             INSERT INTO channels
@@ -2525,11 +2532,12 @@ mod postgres_tests {
             INSERT INTO channel_members (community_id, channel_id, pubkey, role, joined_at)
             SELECT $1, $2, decode(lpad(to_hex(n), 64, '0'), 'hex'), 'member',
                    NOW() + (n || ' seconds')::interval
-            FROM generate_series(1, 1500) n
+            FROM generate_series(1, $3) n
             "#,
         )
         .bind(other_community_id)
         .bind(channel.id)
+        .bind(extra_members)
         .execute(&pool)
         .await
         .expect("insert complete other-tenant roster");

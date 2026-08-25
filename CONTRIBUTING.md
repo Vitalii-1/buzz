@@ -224,6 +224,9 @@ filename prefix instead. Tests that also require infrastructure beyond
 PostgreSQL and Redis live under an `external_infra*_tests` module and are
 excluded without changing their descriptive function names.
 
+See the [buzz-db testing guide](crates/buzz-db/TESTING.md) for the crate-level
+checklist.
+
 `scripts/test-postgres-test-discovery.sh` enforces the convention across every
 Rust source file. It fails CI when an ignored PostgreSQL test would be omitted,
 or when a Redis-only or hybrid test is accidentally included, so module or file

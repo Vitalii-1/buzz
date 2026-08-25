@@ -77,6 +77,9 @@ jobs:
               - 'scripts/test-mobile-worktree-overrides.sh'
               - '.github/workflows/mobile-release-candidate.yml'
               - '.github/workflows/ci.yml'
+      - name: Validate PostgreSQL test discovery
+        if: github.event_name == 'push' || steps.filter.outputs.rust == 'true'
+        run: scripts/test-postgres-test-discovery.sh
       - name: Release workflow source contract
         run: scripts/test-release-ref-contract.sh
       - name: Desktop release candidate contract
@@ -422,7 +425,7 @@ jobs:
   postgres-tests:
     name: PostgreSQL Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     needs: [changes, desktop-e2e-relay]
     if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     permissions:
@@ -451,11 +454,11 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     env:
-      BUZZ_POSTGRES_ADMIN_URL: postgres://buzz:buzz_dev@localhost:5432/postgres
+      BUZZ_POSTGRES_ADMIN_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/postgres
       PGHOST: localhost
       PGPORT: "5432"
       PGUSER: buzz
-      PGPASSWORD: buzz_dev
+      PGPASSWORD: ${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}
       PG_BIN_DIR: /usr/bin
       REDIS_URL: redis://localhost:6379
       PGSCHEMA_PLAN_HOST: localhost
@@ -465,8 +468,6 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
-      - name: Validate PostgreSQL test discovery
-        run: scripts/test-postgres-test-discovery.sh
       - name: Install cargo-nextest
         uses: taiki-e/install-action@0fd46367812ee04360509b4169d9f659d6892bb2 # v2.79.15
         with:
@@ -799,26 +800,6 @@ jobs:
           done
           cat /tmp/buzz-relay.log
           exit 1
-      - name: Invite security tests
-        run: |
-          cargo nextest run \
-            --archive-file target/ci/backend-integration-tests.tar.zst \
-            -E '(package(buzz-db) and test(/relay_invite::postgres_tests/)) or (package(buzz-relay) and test(/api::invites::postgres_tests/))' \
-            --run-ignored ignored-only
-        env:
-          DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
-      - name: Workspace profile (kind:9033) gate tests
-        # Call-site integration for the 9033 authorization gate: open relay
-        # rosterless/steward transitions and the closed-relay admin/owner rule,
-        # against real Postgres. #[ignore]d in the default suite, selected
-        # explicitly here — see handlers::relay_admin::postgres_tests.
-        run: |
-          cargo nextest run \
-            --archive-file target/ci/backend-integration-tests.tar.zst \
-            -E 'package(buzz-relay) and test(/handlers::relay_admin::postgres_tests/)' \
-            --run-ignored ignored-only
-        env:
-          DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
       - name: NIP-ER reminder e2e
         # Feature e2e for NIP-ER (Event Reminders, kind:30300): write-path
         # validation, author-only read filtering, and scheduler delivery against
