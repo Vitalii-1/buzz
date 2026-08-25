@@ -63,12 +63,6 @@ const CANONICAL_SKILL_DIR: &str = ".agents/skills/buzz-cli";
 /// Nest directory name for production builds.
 const NEST_DIR_PROD: &str = ".buzz";
 
-/// Nest directory name for dev builds. Dev builds (those whose Tauri app-data
-/// directory name starts with `"xyz.block.buzz.app.dev"`) use a separate nest
-/// so that the DMG and dev-build instances don't clobber each other's
-/// `.repos-dir` dotfile and `REPOS` symlink.
-const NEST_DIR_DEV: &str = ".buzz-dev";
-
 /// Process-lifetime nest directory. Initialized once at startup via
 /// [`init_nest_dir`] before any call to [`nest_dir`].
 ///
