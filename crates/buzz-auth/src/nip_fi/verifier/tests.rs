@@ -38,13 +38,12 @@ Ne2tqOfFa0hRpa41DANab1/EuDGi7PtIo8xSYwkaoib1MAJlfLvRMjQA\n\
 const TEST_JWK_X_B: &str = "39HHG6dXOJjHelr0rpYr-WQEvIiFizXtrajnxWtIUaU";
 const TEST_JWK_Y_B: &str = "rjUMA1pvX8S4MaLs-0ijzFJjCRqiJvUwAmV8u9EyNAA";
 
-/// A trusted [`StaticIssuerKeySource`] is used throughout, standing in for
-/// PR 3's JWKS runtime. Because the key-source trait is sealed, an external
-/// crate cannot implement its own source at all — the authority-construction
-/// seam is closed, and the only way to exercise the verifier is this
-/// crate-owned source. It returns only a snapshot bound to the exact issuer
-/// requested — the invariant the real source guarantees.
-
+// A trusted [`StaticIssuerKeySource`] is used throughout, standing in for
+// PR 3's JWKS runtime. Because the key-source trait is sealed, an external
+// crate cannot implement its own source at all — the authority-construction
+// seam is closed, and the only way to exercise the verifier is this
+// crate-owned source. It returns only a snapshot bound to the exact issuer
+// requested — the invariant the real source guarantees.
 fn test_jwks(kid: &str) -> JwkSet {
     jwks_with_coords(kid, TEST_JWK_X, TEST_JWK_Y)
 }
