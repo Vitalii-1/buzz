@@ -10,9 +10,6 @@ pub struct ApiError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: String,
-    /// The `WWW-Authenticate` header value for 401 responses. Defaults to
-    /// `Bearer`; set to `Nostr` in NIP-98 mode via `with_www_authenticate`.
-    pub www_authenticate: &'static str,
 }
 
 #[derive(Serialize)]
@@ -34,7 +31,6 @@ impl ApiError {
             status: StatusCode::BAD_REQUEST,
             code,
             message: message.to_owned(),
-            www_authenticate: "Bearer",
         }
     }
 
@@ -43,7 +39,6 @@ impl ApiError {
             status: StatusCode::CONFLICT,
             code: "conflict",
             message: message.to_owned(),
-            www_authenticate: "Bearer",
         }
     }
 
@@ -52,7 +47,6 @@ impl ApiError {
             status: StatusCode::UNPROCESSABLE_ENTITY,
             code: "enforcement_failed",
             message: message.to_owned(),
-            www_authenticate: "Bearer",
         }
     }
 
@@ -61,7 +55,6 @@ impl ApiError {
             status: StatusCode::FORBIDDEN,
             code: "forbidden",
             message: "request is not authorized".to_owned(),
-            www_authenticate: "Bearer",
         }
     }
 
@@ -70,7 +63,6 @@ impl ApiError {
             status: StatusCode::FORBIDDEN,
             code: "forbidden",
             message: message.to_owned(),
-            www_authenticate: "Bearer",
         }
     }
 
@@ -79,7 +71,6 @@ impl ApiError {
             status: StatusCode::UNAUTHORIZED,
             code: "unauthorized",
             message: "a valid admin credential is required".to_owned(),
-            www_authenticate: "Bearer",
         }
     }
 
@@ -88,7 +79,6 @@ impl ApiError {
             status: StatusCode::NOT_FOUND,
             code: "not_found",
             message: "record was not found".to_owned(),
-            www_authenticate: "Bearer",
         }
     }
 
@@ -97,15 +87,7 @@ impl ApiError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "internal_error",
             message: "request failed".to_owned(),
-            www_authenticate: "Bearer",
         }
-    }
-
-    /// Override the `WWW-Authenticate` challenge value. Used by NIP-98 mode
-    /// to advertise `Nostr` instead of `Bearer`.
-    pub fn with_www_authenticate(mut self, challenge: &'static str) -> Self {
-        self.www_authenticate = challenge;
-        self
     }
 }
 
@@ -123,13 +105,13 @@ impl IntoResponse for ApiError {
         )
             .into_response();
         // RFC 9110 requires a challenge on every 401 so clients know which
-        // scheme to present.
+        // scheme to present. The admin API authenticates only via NIP-98, so
+        // the challenge is always `Nostr`.
         if self.status == StatusCode::UNAUTHORIZED {
-            if let Ok(value) = HeaderValue::from_str(self.www_authenticate) {
-                response
-                    .headers_mut()
-                    .insert(axum::http::header::WWW_AUTHENTICATE, value);
-            }
+            response.headers_mut().insert(
+                axum::http::header::WWW_AUTHENTICATE,
+                HeaderValue::from_static("Nostr"),
+            );
         }
         response
     }

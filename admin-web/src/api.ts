@@ -1,5 +1,3 @@
-import { clearToken, getToken } from "./token";
-
 const PREFIX = "/api/admin/v1";
 
 export class ApiFailure extends Error {
@@ -12,10 +10,9 @@ export class ApiFailure extends Error {
 }
 
 /// The authentication mode the relay requires, discovered via the probe.
-/// - `token`    — operator bearer token (session-stored, prompts on first visit)
 /// - `nip98`    — NIP-98 HTTP Auth; each request signed with a NIP-07 extension
 /// - `disabled` — relay returned 200 with no auth; no credential needed
-export type AuthMode = "token" | "nip98" | "disabled";
+export type AuthMode = "nip98" | "disabled";
 
 /// Sign a NIP-98 kind-27235 event for the given URL + method via window.nostr.
 /// Throws if window.nostr is not available or signing fails.
@@ -47,11 +44,9 @@ interface Nostr98 {
 
 /// Every admin API call goes through here. Attaches the correct credential
 /// for the current auth mode:
-/// - `token` mode: Bearer header from session storage
 /// - `nip98` mode: sign a kind-27235 event via NIP-07 for each request
 /// - `disabled` mode: no credential
 ///
-/// A 401 in token mode clears the stored token so the prompt re-appears.
 /// A 401 in nip98 mode re-signs once (handles key rotation / clock skew)
 /// and retries the request exactly once; a second 401 surfaces the error —
 /// no infinite loop.
@@ -62,10 +57,7 @@ async function send(
 ): Promise<Response> {
   const doRequest = async (extraHeaders?: Record<string, string>) => {
     const headers: Record<string, string> = { accept, ...extraHeaders };
-    if (authMode === "token") {
-      const token = getToken();
-      if (token) headers.authorization = `Bearer ${token}`;
-    } else if (authMode === "nip98") {
+    if (authMode === "nip98") {
       const url = `${location.protocol}//${location.host}${PREFIX}${path}`;
       headers.authorization = await signNip98(url, "GET");
     }
@@ -74,14 +66,10 @@ async function send(
 
   let response = await doRequest();
 
-  if (response.status === 401) {
-    if (authMode === "token") {
-      clearToken();
-    } else if (authMode === "nip98") {
-      // Re-sign with a fresh event and retry exactly once (handles clock
-      // skew or key rotation). A second 401 surfaces the error below.
-      response = await doRequest();
-    }
+  if (response.status === 401 && authMode === "nip98") {
+    // Re-sign with a fresh event and retry exactly once (handles clock
+    // skew or key rotation). A second 401 surfaces the error below.
+    response = await doRequest();
   }
 
   if (response.status === 401) {
@@ -102,26 +90,20 @@ export async function request<T>(path: string, authMode: AuthMode): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-/// Probe whether the relay requires authentication and what kind.
-/// Issues one unauthenticated request and reads the WWW-Authenticate header:
-/// - 200                       → `disabled` (no auth needed)
-/// - 401 + WWW-Authenticate: Nostr → `nip98`
-/// - 401 + WWW-Authenticate: Bearer (or any other 4xx/5xx) → `token`
+/// Probe whether the relay requires authentication.
+/// Issues one unauthenticated request:
+/// - 200 → `disabled` (no auth needed)
+/// - anything else → `nip98` (the only authenticated mode; fail-secure)
 export async function probeAuthMode(): Promise<AuthMode> {
   try {
     const response = await fetch(`${PREFIX}/reports`, {
       credentials: "same-origin",
       headers: { accept: "application/json" },
     });
-    if (response.status === 200) return "disabled";
-    if (response.status === 401) {
-      const challenge = response.headers.get("www-authenticate") ?? "";
-      if (challenge.trim().toLowerCase() === "nostr") return "nip98";
-    }
-    return "token";
+    return response.status === 200 ? "disabled" : "nip98";
   } catch {
-    // Network error — default to token so the prompt is shown.
-    return "token";
+    // Network error — default to nip98 so a credential is required.
+    return "nip98";
   }
 }
 

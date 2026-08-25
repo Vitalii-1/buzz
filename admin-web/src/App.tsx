@@ -13,7 +13,6 @@ import {
   request,
   requestObjectUrl,
 } from "./api";
-import { setToken, useToken } from "./token";
 import type {
   FeedbackDetail,
   FeedbackSummary,
@@ -862,49 +861,12 @@ function ArrowIcon() {
   );
 }
 
-/// The whole dashboard is behind the credential: with no token in session
-/// storage there is nothing worth rendering, and every API call would 401.
-function TokenPrompt({ rejected }: { rejected: boolean }) {
-  const [value, setValue] = useState("");
-  return (
-    <div className="app">
-      <form
-        className="state token-prompt"
-        onSubmit={(event) => {
-          event.preventDefault();
-          const token = value.trim();
-          if (token) setToken(token);
-        }}
-      >
-        <h2>Admin token required</h2>
-        <p>
-          {rejected
-            ? "That token was rejected. Enter the operator token for this deployment."
-            : "Enter the operator token for this deployment. It is kept for this browser session only."}
-        </p>
-        <label>
-          <span className="visually-hidden">Admin token</span>
-          <input
-            type="password"
-            name="token"
-            autoComplete="off"
-            placeholder="Admin token"
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-          />
-        </label>
-        <button type="submit">Continue</button>
-      </form>
-    </div>
-  );
-}
-
 /// Shown in nip98 mode when no NIP-07 extension is available. Instructs the
 /// operator to install nos2x or Alby before continuing.
 function Nip07Screen() {
   return (
     <div className="app">
-      <div className="state token-prompt">
+      <div className="state auth-prompt">
         <h2>Nostr extension required</h2>
         <p>
           This relay uses NIP-98 HTTP Auth. Install a NIP-07 browser extension
@@ -933,24 +895,11 @@ function Nip07Screen() {
 
 export function App() {
   const { path } = usePath();
-  const token = useToken();
-  // Distinguishes the first visit from a token the relay just rejected.
-  const [everHadToken, setEverHadToken] = useState(token !== null);
-  useEffect(() => {
-    if (token !== null) setEverHadToken(true);
-  }, [token]);
 
   // Probe the relay once to discover the auth mode. `null` means the probe is
   // still in flight. Once resolved, the mode is stable for the session.
-  const [authMode, setAuthMode] = useState<AuthMode | null>(
-    // If we already have a token we know we're in token mode; skip the probe.
-    token !== null ? "token" : null,
-  );
+  const [authMode, setAuthMode] = useState<AuthMode | null>(null);
   useEffect(() => {
-    if (token !== null) {
-      setAuthMode("token");
-      return;
-    }
     let active = true;
     probeAuthMode().then((mode) => {
       if (active) setAuthMode(mode);
@@ -958,17 +907,13 @@ export function App() {
     return () => {
       active = false;
     };
-  }, [token]);
+  }, []);
 
   const report = path.match(/^\/reports\/([^/]+)$/);
   const feedback = path.match(/^\/feedback\/([^/]+)$/);
 
   // Probe still in flight — render nothing to avoid a visible flash.
   if (authMode === null) return null;
-
-  // Token mode: show the token prompt until a valid token is stored.
-  if (authMode === "token" && !token)
-    return <TokenPrompt rejected={everHadToken} />;
 
   // NIP-98 mode: require a NIP-07 extension.
   if (authMode === "nip98" && !(window as Window & { nostr?: unknown }).nostr)

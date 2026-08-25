@@ -459,7 +459,7 @@ relay-web: bootstrap _ensure-migrations
     pnpm -C web build
     BUZZ_WEB_DIR=./web/dist cargo run -p buzz-relay
 
-# Build and run the private read-only admin dashboard
+# Build and run the private admin dashboard
 admin: bootstrap _ensure-migrations
     #!/usr/bin/env bash
     set -euo pipefail
@@ -468,18 +468,20 @@ admin: bootstrap _ensure-migrations
     pnpm -C admin-web build
     export BUZZ_ADMIN_HOST="${BUZZ_ADMIN_HOST:-admin.localhost:3000}"
     export BUZZ_ADMIN_WEB_DIR="${BUZZ_ADMIN_WEB_DIR:-{{justfile_directory()}}/admin-web/dist}"
-    # The relay refuses to start without a token, and never logs one. Mint a
-    # throwaway per run so no dev secret is ever committed or reused.
-    export BUZZ_ADMIN_TOKEN="${BUZZ_ADMIN_TOKEN:-$(openssl rand -hex 32)}"
+    # Default to disabled auth locally: localhost is the network boundary and a
+    # NIP-07 signer extension can't be assumed in dev. Override per run with
+    # BUZZ_ADMIN_AUTH=nip98 (plus RELAY_OPERATOR_PUBKEYS or RELAY_OWNER_PUBKEY)
+    # to exercise the authenticated path.
+    export BUZZ_ADMIN_AUTH="${BUZZ_ADMIN_AUTH:-disabled}"
     echo "Admin dashboard: http://${BUZZ_ADMIN_HOST}/reports"
-    echo "Admin token (paste into dashboard prompt): ${BUZZ_ADMIN_TOKEN}"
+    echo "Auth mode: ${BUZZ_ADMIN_AUTH} (set BUZZ_ADMIN_AUTH=nip98 to require a signed operator)"
     cargo run -p buzz-relay
 
 # Seed deterministic reports and product feedback for local admin dashboard review
 admin-seed: _ensure-migrations
     ./scripts/seed-admin-dashboard.sh
 
-# Run focused relay and browser checks for the read-only admin dashboard
+# Run focused relay and browser checks for the admin dashboard
 admin-check: fmt-check
     cargo check -p buzz-relay --all-targets
     cargo test -p buzz-relay api::admin

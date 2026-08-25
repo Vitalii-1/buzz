@@ -4,25 +4,23 @@
 
 - **Breaking:** the relay admin moderation API (`/api/admin/v1`) now requires
   explicit authentication configuration when `BUZZ_ADMIN_HOST` is set. Choose
-  one mode via `BUZZ_ADMIN_AUTH` (unset defaults to `token`):
-  - **`BUZZ_ADMIN_AUTH=token` (default):** set `BUZZ_ADMIN_TOKEN` to exactly
-    64 hex characters (`openssl rand -hex 32`). Every request requires
-    `Authorization: Bearer`. The dashboard prompts for the token on first load.
-  - **`BUZZ_ADMIN_AUTH=disabled`:** admin API is unauthenticated. Use only when
-    the admin API is already protected by a VPN or private ingress. The relay
-    logs a `WARN` on every startup. The dashboard skips the token prompt.
-  - **`BUZZ_ADMIN_AUTH=nip98`:** NIP-98 HTTP Auth. Every request must carry an
-    `Authorization: Nostr <base64 event>` header containing a signed kind-27235
-    event. Authorized principals resolve from `RELAY_OPERATOR_PUBKEYS`
+  one mode via `BUZZ_ADMIN_AUTH` (unset defaults to `nip98`):
+  - **`BUZZ_ADMIN_AUTH=nip98` (default):** NIP-98 HTTP Auth. Every request must
+    carry an `Authorization: Nostr <base64 event>` header containing a signed
+    kind-27235 event. Authorized principals resolve from `RELAY_OPERATOR_PUBKEYS`
     (comma-separated 64-char hex pubkeys for config-backed Operators),
     `RELAY_OWNER_PUBKEY` (implicit Operator fallback when `RELAY_OPERATOR_PUBKEYS`
     is unset), and the `relay_operators` table (DB-managed Operator/Moderator
     roster). The dashboard requires a NIP-07 browser extension (nos2x or Alby);
     without one it shows an installation screen. Individual operator access is
     revocable without rotating a shared secret.
+  - **`BUZZ_ADMIN_AUTH=disabled`:** admin API is unauthenticated. Use only when
+    the admin API is already protected by a VPN or private ingress. The relay
+    logs a `WARN` on every startup. The dashboard renders directly.
   - Any unrecognised value for `BUZZ_ADMIN_AUTH` is a startup error
-    (typo-proofing). `BUZZ_ADMIN_TOKEN` set alongside `disabled` or `nip98` is
-    also a startup error.
+    (typo-proofing). Token (bearer) authentication is not supported:
+    `BUZZ_ADMIN_TOKEN` set at all is a startup error — remove it from the
+    environment.
   - `Host`/`Origin` matching is retained in all modes as defense-in-depth.
   - **Migration from the previous `BUZZ_ADMIN_INSECURE_NO_AUTH=true`:** replace
     with `BUZZ_ADMIN_AUTH=disabled`. The behavior is identical.

@@ -744,16 +744,18 @@ jobs:
             --run-ignored ignored-only
         env:
           DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz
-      - name: Admin API token-mode read-write tests
-        # The only real HTTP → relay-token principal → mutation → cross-table
-        # attribution coverage: token-mode dismiss attributes to the relay key
-        # with relay_operator authority, and token-mode staffing PUT/DELETE
-        # records the relay key as added_by. #[ignore]d in the default suite —
-        # see api::admin::tests::token_mode_with_relay_identity_*.
+      - name: Admin API nip98 read-write attribution test
+        # The only real HTTP → nip98 operator principal → mutation → cross-table
+        # attribution coverage: an authenticated operator's dismiss attributes
+        # to the operator's own key with relay_operator authority. Staffing
+        # PUT/DELETE attribution is covered by
+        # nip98_staffing_put_and_delete_write_attributed_audit_rows in the
+        # roster-audit lane below. #[ignore]d in the default suite — see
+        # api::admin::tests::nip98_operator_dismiss_succeeds_attributed_to_operator.
         run: |
           cargo nextest run \
             --archive-file target/ci/backend-integration-tests.tar.zst \
-            -E 'package(buzz-relay) and test(/api::admin::tests::token_mode_with_relay_identity/)' \
+            -E 'package(buzz-relay) and test(=api::admin::tests::nip98_operator_dismiss_succeeds_attributed_to_operator)' \
             --run-ignored ignored-only
         env:
           DATABASE_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/buzz

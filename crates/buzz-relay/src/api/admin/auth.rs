@@ -21,16 +21,6 @@
 //! Config outranks DB: a `relay_operators` DB row for a config-backed
 //! Operator pubkey is ignored; it never demotes a config grant.
 //!
-//! # token mode
-//!
-//! A shared bearer token authenticates the *deployment*, not a person. When
-//! the relay has a stable identity (a configured `BUZZ_RELAY_PRIVATE_KEY`, or
-//! the deterministic dev key when `BUZZ_REQUIRE_AUTH_TOKEN=false`),
-//! [`authorize()`] synthesizes an Operator principal attributed to the relay's
-//! own pubkey ([`AdminSource::RelayToken`]) — the same identity that signs
-//! moderation notices — so token-holder mutations write truthful, never-NULL
-//! audit rows against the deployment. Per-person attribution requires nip98.
-//!
 //! # disabled mode (read-only)
 //!
 //! `authorize()` succeeds for read requests but returns `None` for the
@@ -75,15 +65,10 @@ pub enum AdminSource {
     OwnerFallback,
     /// Pubkey found in the `relay_operators` DB table.
     Db,
-    /// Token mode with a stable relay identity: the shared bearer token grants
-    /// Operator attributed to the relay's own pubkey (`state.relay_keypair`) —
-    /// the same identity that signs moderation notices. This attributes to the
-    /// *deployment*, not a person; per-person attribution requires nip98.
-    RelayToken,
 }
 
 /// A resolved deployment-level principal, returned by [`authorize`] in nip98
-/// mode and in read-write token mode (relay-attributed Operator).
+/// mode.
 #[derive(Debug, Clone)]
 pub struct AdminPrincipal {
     /// 32-byte pubkey (binary).
@@ -108,7 +93,6 @@ pub(crate) fn admin_source_str(source: &AdminSource) -> &'static str {
         AdminSource::Config => "config",
         AdminSource::OwnerFallback => "owner_fallback",
         AdminSource::Db => "db",
-        AdminSource::RelayToken => "relay_token",
     }
 }
 
@@ -197,8 +181,7 @@ fn method_has_body(method: &str) -> bool {
 /// nip98 mode — the `payload` sha256 tag would be skipped.
 ///
 /// Returns:
-/// - `Ok(Some(principal))` — nip98 mode (role resolved from roster), or token
-///   mode with a stable relay identity (Operator attributed to the relay key).
+/// - `Ok(Some(principal))` — nip98 mode (role resolved from roster).
 /// - `Ok(None)` — disabled mode; reads pass, mutations 403 via
 ///   [`require_mutation_principal`].
 /// - `Err(_)` — authentication or authorization failed.
@@ -218,13 +201,6 @@ pub async fn authorize(
     // Credential check first: an unauthenticated caller learns nothing about
     // which Host or Origin the deployment expects.
     let (principal, nip98_event_id) = match &config.auth {
-        AdminAuth::Token(token) => {
-            authorize_bearer(token, headers)?;
-            // Read-write token mode: when the relay has a stable identity, the
-            // shared token acts as the relay (full Operator). This attributes
-            // mutations to a truthful, never-NULL actor (the relay pubkey).
-            (resolve_token_principal(state), None)
-        }
         AdminAuth::Disabled => (None, None),
         AdminAuth::Nip98 => {
             let full_path = format!("{ADMIN_API_PREFIX}{path_and_query}");
@@ -335,44 +311,15 @@ pub async fn resolve_admin_principal(
     Err(ApiError::forbidden())
 }
 
-/// Resolve the token-mode principal from the relay's own identity.
-///
-/// Token mode goes read-write only when the relay has a **stable** identity —
-/// a configured `BUZZ_RELAY_PRIVATE_KEY`, or the deterministic dev key used
-/// when `BUZZ_REQUIRE_AUTH_TOKEN=false` (stable across restarts, so it does not
-/// orphan audit rows). In both cases mutations are attributed to
-/// `state.relay_keypair.public_key()` — the same identity that signs moderation
-/// notices — as Operator. This attributes to the *deployment*, not a person.
-///
-/// Returns `None` (read-only) only in the configuration main.rs rejects at
-/// startup (`require_auth_token` with no private key), which cannot reach a
-/// running server; the check keeps the invariant explicit and local.
-fn resolve_token_principal(state: &AppState) -> Option<AdminPrincipal> {
-    let has_stable_identity =
-        state.config.relay_private_key.is_some() || !state.config.require_auth_token;
-    if !has_stable_identity {
-        return None;
-    }
-    Some(AdminPrincipal {
-        pubkey: state.relay_keypair.public_key().to_bytes(),
-        role: AdminRole::Operator,
-        source: AdminSource::RelayToken,
-    })
-}
-
-/// Require that this request resolved a principal (nip98, or token mode with a
-/// stable relay identity) and return it. Mutation and staffing routes are
-/// unavailable in disabled mode.
+/// Require that this request resolved a principal (nip98 mode) and return it.
+/// Mutation and staffing routes are unavailable in disabled mode.
 ///
 /// Returns the principal or a 403 if none was resolved.
 pub fn require_mutation_principal(
     principal: Option<AdminPrincipal>,
 ) -> Result<AdminPrincipal, ApiError> {
-    principal.ok_or_else(|| {
-        ApiError::forbidden_with_message(
-            "mutations require BUZZ_ADMIN_AUTH=nip98, or token mode with a relay identity",
-        )
-    })
+    principal
+        .ok_or_else(|| ApiError::forbidden_with_message("mutations require BUZZ_ADMIN_AUTH=nip98"))
 }
 
 /// Require that the principal holds Operator role. Used by staffing routes.
@@ -384,32 +331,6 @@ pub fn require_operator(principal: &AdminPrincipal) -> Result<(), ApiError> {
             "staffing endpoints require operator role",
         ))
     }
-}
-
-/// Require exactly one `Authorization: Bearer <64 hex>` header matching the
-/// configured operator token. Every rejection is the same 401 envelope.
-fn authorize_bearer(
-    token: &crate::config::AdminToken,
-    headers: &HeaderMap,
-) -> Result<(), ApiError> {
-    let mut values = headers.get_all(header::AUTHORIZATION).iter();
-    let (Some(value), None) = (values.next(), values.next()) else {
-        return Err(ApiError::unauthorized());
-    };
-    let credential = value
-        .to_str()
-        .ok()
-        .and_then(bearer_credential)
-        .ok_or_else(ApiError::unauthorized)?;
-    let mut presented = [0u8; 32];
-    hex::decode_to_slice(credential, &mut presented)
-        .map_err(|_| ApiError::unauthorized())
-        .and_then(|()| {
-            token
-                .matches(&presented)
-                .then_some(())
-                .ok_or_else(ApiError::unauthorized)
-        })
 }
 
 /// Require exactly one `Authorization: Nostr <base64 event>` header, verify
@@ -432,7 +353,7 @@ async fn authorize_nip98(
     method: &str,
     raw_body: Option<&[u8]>,
 ) -> Result<([u8; 32], nostr::EventId), ApiError> {
-    let unauth = || ApiError::unauthorized().with_www_authenticate("Nostr");
+    let unauth = ApiError::unauthorized;
 
     // 1. Extract exactly one Authorization: Nostr header.
     let mut values = headers.get_all(header::AUTHORIZATION).iter();
@@ -489,7 +410,7 @@ async fn authorize_nip98(
 /// [`resolve_admin_principal`] confirmed a roster grant, so an unrostered
 /// signer never consumes a slot. Redis failure fails closed.
 async fn claim_nip98_replay(state: &AppState, event_id: &nostr::EventId) -> Result<(), ApiError> {
-    let unauth = || ApiError::unauthorized().with_www_authenticate("Nostr");
+    let unauth = ApiError::unauthorized;
     match state
         .nip98_replay
         .try_mark_in_scope(
@@ -521,16 +442,6 @@ fn nostr_credential(value: &str) -> Option<&str> {
         .filter(|c| !c.is_empty())
 }
 
-/// Extract the credential from an `Authorization` value. RFC 9110 makes the
-/// auth scheme case-insensitive, so `bearer` is as valid as `Bearer`.
-fn bearer_credential(value: &str) -> Option<&str> {
-    let (scheme, credential) = value.split_once(' ')?;
-    scheme
-        .eq_ignore_ascii_case("Bearer")
-        .then(|| credential.trim_start_matches(' '))
-        .filter(|credential| !credential.is_empty())
-}
-
 fn origin_matches_host(origin: &str, host: &str) -> bool {
     // Compare against the exact canonical origin: https:// for non-loopback,
     // http:// for loopback. Accepting either scheme for non-loopback would
@@ -542,8 +453,7 @@ fn origin_matches_host(origin: &str, host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        admin_api_origin, bearer_credential, canonical_url, method_has_body, nostr_credential,
-        origin_matches_host,
+        admin_api_origin, canonical_url, method_has_body, nostr_credential, origin_matches_host,
     };
 
     #[test]
@@ -582,17 +492,6 @@ mod tests {
             "https://admin.localhost:3000",
             "admin.localhost:3000"
         ));
-    }
-
-    #[test]
-    fn bearer_scheme_is_case_insensitive_and_credential_is_non_empty() {
-        assert_eq!(bearer_credential("Bearer abc"), Some("abc"));
-        assert_eq!(bearer_credential("bearer abc"), Some("abc"));
-        assert_eq!(bearer_credential("BEARER  abc"), Some("abc"));
-        assert_eq!(bearer_credential("Bearer "), None);
-        assert_eq!(bearer_credential("Basic abc"), None);
-        assert_eq!(bearer_credential("abc"), None);
-        assert_eq!(bearer_credential(""), None);
     }
 
     #[test]

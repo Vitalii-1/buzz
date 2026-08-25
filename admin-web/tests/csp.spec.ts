@@ -17,9 +17,6 @@ function adminCsp() {
   return match[1];
 }
 
-const TOKEN =
-  "5f0e1d2c3b4a59687786958493a2b1c0decadebeefcafe0123456789abcdef01";
-
 test("the relay admin csp does not break the built dashboard", async ({
   page,
 }) => {
@@ -27,9 +24,8 @@ test("the relay admin csp does not break the built dashboard", async ({
   expect(csp).toContain("frame-ancestors 'none'");
   expect(csp).not.toContain("unsafe-inline");
 
-  await page.addInitScript((token) => {
-    sessionStorage.setItem("buzz-admin-token", token);
-  }, TOKEN);
+  // Every admin API call returns 200, so the probe resolves to disabled mode
+  // and the dashboard renders without a credential.
   await page.route("**/api/admin/v1/**", (route) =>
     route.fulfill({ contentType: "application/json", body: "[]" }),
   );

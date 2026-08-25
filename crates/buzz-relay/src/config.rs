@@ -26,9 +26,8 @@ pub enum ConfigError {
 
 /// Authentication mode for the deployment-admin API.
 ///
-/// Configured by `BUZZ_ADMIN_AUTH`. Exactly one variant is active; invalid
-/// combinations (e.g. `BUZZ_ADMIN_TOKEN` set in `Nip98` mode) are startup
-/// errors — they are not representable.
+/// Configured by `BUZZ_ADMIN_AUTH`: unset/empty/`nip98` → `Nip98` (fail-secure
+/// default), `disabled` → `Disabled`, anything else is a startup error.
 ///
 /// # Role resolution (nip98 mode only)
 ///
@@ -40,19 +39,11 @@ pub enum ConfigError {
 /// - `Moderator/Db` from the `relay_operators` table otherwise
 /// - `None` → 403 (no fall-through role, ever)
 ///
-/// Token mode is read-write when the relay has a stable identity
-/// (`BUZZ_RELAY_PRIVATE_KEY` configured, or dev mode); mutations are attributed
-/// to the relay's own pubkey, and it is read-only otherwise. Disabled mode is
-/// always read-only. NIP-98 mode is read-write per resolved principal.
+/// Disabled mode is always read-only. NIP-98 mode is read-write per resolved
+/// principal.
 #[derive(Debug, Clone)]
 pub enum AdminAuth {
-    /// Operator bearer credential required on every request.
-    /// Selected by `BUZZ_ADMIN_AUTH=token` (or leaving `BUZZ_ADMIN_AUTH` unset).
-    /// Read-write when the relay has a stable identity (`BUZZ_RELAY_PRIVATE_KEY`
-    /// configured, or dev mode with `BUZZ_REQUIRE_AUTH_TOKEN=false`); mutations
-    /// are attributed to the relay's own pubkey. Read-only otherwise.
-    Token(AdminToken),
-    /// Bearer authentication disabled. The operator has explicitly asserted
+    /// Authentication disabled. The operator has explicitly asserted
     /// that the admin API is protected at the network layer (reverse proxy,
     /// VPN, firewall). `Host`/`Origin` checks remain active as defense-in-depth.
     /// Selected by `BUZZ_ADMIN_AUTH=disabled`.
@@ -62,15 +53,15 @@ pub enum AdminAuth {
     /// NIP-98 HTTP Auth. Every request must carry an `Authorization: Nostr`
     /// header containing a signed kind-27235 event. The authenticated pubkey
     /// is resolved to an [`crate::api::admin::auth::AdminPrincipal`] at request
-    /// time from config + DB. Selected by `BUZZ_ADMIN_AUTH=nip98`.
-    /// Read-write per resolved principal; the only mode that attributes
-    /// mutations to a distinct human operator rather than the relay itself.
+    /// time from config + DB. Selected by `BUZZ_ADMIN_AUTH=nip98` or by leaving
+    /// `BUZZ_ADMIN_AUTH` unset (fail-secure default). Read-write per resolved
+    /// principal; attributes mutations to a distinct human operator.
     Nip98,
 }
 
 /// Deny-by-default deployment-admin configuration. Mutation and staffing routes
-/// require a resolved principal (NIP-98, or token mode with a stable relay
-/// identity); disabled mode is always read-only.
+/// require a resolved principal (NIP-98 only); disabled mode is always
+/// read-only.
 #[derive(Debug, Clone)]
 pub struct AdminConfig {
     /// Exact admin HTTP authority.
@@ -79,59 +70,6 @@ pub struct AdminConfig {
     pub auth: AdminAuth,
     /// Optional admin SPA bundle directory.
     pub web_dir: Option<std::path::PathBuf>,
-}
-
-/// Operator bearer credential for the deployment-admin API, held decoded.
-///
-/// `Debug` is redacted by hand so the secret cannot escape through a derived
-/// `Debug` on [`AdminConfig`] or [`Config`].
-#[derive(Clone)]
-pub struct AdminToken([u8; 32]);
-
-impl AdminToken {
-    /// Constant-time comparison against a presented credential.
-    pub fn matches(&self, presented: &[u8; 32]) -> bool {
-        use subtle::ConstantTimeEq;
-        self.0.ct_eq(presented).into()
-    }
-
-    /// Build a token from raw bytes. Test-only: production tokens come from
-    /// [`parse_admin_token`] so the operator-facing validation is never bypassed.
-    #[cfg(test)]
-    pub fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-}
-
-impl std::fmt::Debug for AdminToken {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("AdminToken(redacted)")
-    }
-}
-
-/// Guidance repeated in every `BUZZ_ADMIN_TOKEN` rejection.
-const ADMIN_TOKEN_GUIDANCE: &str = "BUZZ_ADMIN_TOKEN must be 64 hexadecimal characters \
-     (surrounding whitespace is trimmed); generate one with `openssl rand -hex 32`";
-
-/// Read and validate the admin bearer credential. Fail-closed: the admin API is
-/// only ever mounted alongside a token that passed this check.
-fn parse_admin_token() -> Result<AdminToken, ConfigError> {
-    let raw = match std::env::var("BUZZ_ADMIN_TOKEN") {
-        Ok(value) => value,
-        Err(std::env::VarError::NotPresent) => {
-            return Err(ConfigError::InvalidValue(format!(
-                "BUZZ_ADMIN_TOKEN is required whenever BUZZ_ADMIN_HOST is set — \
-                 {ADMIN_TOKEN_GUIDANCE}"
-            )))
-        }
-        Err(std::env::VarError::NotUnicode(_)) => {
-            return Err(ConfigError::InvalidValue(ADMIN_TOKEN_GUIDANCE.to_string()))
-        }
-    };
-    let mut token = [0u8; 32];
-    hex::decode_to_slice(raw.trim(), &mut token)
-        .map_err(|_| ConfigError::InvalidValue(ADMIN_TOKEN_GUIDANCE.to_string()))?;
-    Ok(AdminToken(token))
 }
 
 /// Relay-hosted policy content presented on join surfaces.
@@ -1049,7 +987,7 @@ impl Config {
             })
         };
 
-        // Read-only deployment-admin surface. The route is absent when the host is unset.
+        // Deployment-admin surface. The route is absent when the host is unset.
         let admin = match std::env::var("BUZZ_ADMIN_HOST")
             .ok()
             .map(|value| value.trim().to_owned())
@@ -1057,10 +995,12 @@ impl Config {
         {
             None => {
                 if std::env::var_os("BUZZ_ADMIN_TOKEN").is_some() {
-                    tracing::warn!(
-                        "BUZZ_ADMIN_TOKEN is set without BUZZ_ADMIN_HOST — the admin \
-                         dashboard and API stay disabled and the token is ignored"
-                    );
+                    return Err(ConfigError::InvalidValue(
+                        "BUZZ_ADMIN_TOKEN is set but token authentication was removed — \
+                         the admin API now supports only BUZZ_ADMIN_AUTH=nip98 (default) \
+                         or disabled; remove BUZZ_ADMIN_TOKEN from the environment"
+                            .to_string(),
+                    ));
                 }
                 if std::env::var_os("BUZZ_ADMIN_AUTH").is_some() {
                     tracing::warn!(
@@ -1125,36 +1065,28 @@ impl Config {
                 }
                 let host = host.to_lowercase();
 
-                // Parse BUZZ_ADMIN_AUTH. Accepted values: "token" (default when
-                // unset), "disabled", "nip98". Any other non-empty value is a
-                // startup error (typo-proofing).
-                let auth_mode = match std::env::var("BUZZ_ADMIN_AUTH")
+                // Parse BUZZ_ADMIN_AUTH. Accepted values: "nip98" (default when
+                // unset or empty) and "disabled". Any other value is a startup
+                // error (typo-proofing). Token authentication was removed —
+                // BUZZ_ADMIN_TOKEN in the environment is a hard startup failure
+                // so a deploy that used to honor a credential cannot silently
+                // ignore it.
+                if std::env::var_os("BUZZ_ADMIN_TOKEN").is_some() {
+                    return Err(ConfigError::InvalidValue(
+                        "BUZZ_ADMIN_TOKEN is set but token authentication was removed — \
+                         the admin API now supports only BUZZ_ADMIN_AUTH=nip98 (default) \
+                         or disabled; remove BUZZ_ADMIN_TOKEN from the environment"
+                            .to_string(),
+                    ));
+                }
+
+                let auth = match std::env::var("BUZZ_ADMIN_AUTH")
                     .ok()
                     .as_deref()
                     .map(str::trim)
                 {
-                    None | Some("") | Some("token") => "token",
-                    Some("disabled") => "disabled",
-                    Some("nip98") => "nip98",
-                    Some(other) => {
-                        return Err(ConfigError::InvalidValue(format!(
-                            "BUZZ_ADMIN_AUTH must be \"token\", \"disabled\", or \"nip98\"; \
-                             got \"{other}\""
-                        )))
-                    }
-                };
-
-                // BUZZ_ADMIN_TOKEN set in nip98 or disabled mode is ambiguous intent; fail
-                // closed.
-                if auth_mode != "token" && std::env::var_os("BUZZ_ADMIN_TOKEN").is_some() {
-                    return Err(ConfigError::InvalidValue(format!(
-                        "BUZZ_ADMIN_TOKEN is set but BUZZ_ADMIN_AUTH is \"{auth_mode}\" — \
-                         BUZZ_ADMIN_TOKEN is only used in token mode; set one or the other"
-                    )));
-                }
-
-                let auth = match auth_mode {
-                    "disabled" => {
+                    None | Some("") | Some("nip98") => AdminAuth::Nip98,
+                    Some("disabled") => {
                         tracing::warn!(
                             "BUZZ_ADMIN_AUTH=disabled — the admin API is \
                              unauthenticated; the operator has asserted that access is \
@@ -1162,8 +1094,11 @@ impl Config {
                         );
                         AdminAuth::Disabled
                     }
-                    "nip98" => AdminAuth::Nip98,
-                    _ => AdminAuth::Token(parse_admin_token()?),
+                    Some(other) => {
+                        return Err(ConfigError::InvalidValue(format!(
+                            "BUZZ_ADMIN_AUTH must be \"nip98\" or \"disabled\"; got \"{other}\""
+                        )))
+                    }
                 };
 
                 let web_dir = std::env::var("BUZZ_ADMIN_WEB_DIR")
@@ -1416,68 +1351,54 @@ mod tests {
         config
     }
 
-    const VALID_ADMIN_TOKEN: &str =
+    /// A valid-looking token value, used only to prove that setting
+    /// `BUZZ_ADMIN_TOKEN` is now a hard startup error (token auth was removed).
+    const SOME_ADMIN_TOKEN: &str =
         "5f0e1d2c3b4a59687786958493a2b1c0decadebeefcafe0123456789abcdef01";
 
     #[test]
-    fn admin_host_without_a_usable_token_fails_closed_at_startup() {
+    fn admin_token_set_fails_closed_at_startup() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        for token in [
-            None,
-            Some(""),
-            Some("   "),
-            Some("not-hex-not-hex-not-hex-not-hex-not-hex-not-hex-not-hex-not-hex1"),
-            Some(&VALID_ADMIN_TOKEN[..62]),
-            Some("5f0e1d2c3b4a59687786958493a2b1c0decadebeefcafe0123456789abcdef0100"),
-        ] {
+        // Token authentication was removed. Any BUZZ_ADMIN_TOKEN in the
+        // environment — with a host, or in any mode — is a startup error so a
+        // deploy that used to honor a credential cannot silently ignore it.
+        for auth in [None, Some("nip98"), Some("disabled")] {
             let result = config_with_admin_env(&[
                 ("BUZZ_ADMIN_HOST", Some("admin.example")),
-                ("BUZZ_ADMIN_TOKEN", token),
+                ("BUZZ_ADMIN_TOKEN", Some(SOME_ADMIN_TOKEN)),
+                ("BUZZ_ADMIN_AUTH", auth),
             ]);
             assert!(
                 matches!(
                     result,
                     Err(ConfigError::InvalidValue(ref message))
                         if message.contains("BUZZ_ADMIN_TOKEN")
+                           && message.contains("removed")
                 ),
-                "{token:?} must be rejected"
+                "BUZZ_ADMIN_TOKEN with auth={auth:?} must be rejected: {result:?}"
             );
         }
     }
 
     #[test]
-    fn admin_surface_activates_with_a_valid_token_and_tolerates_surrounding_whitespace() {
+    fn admin_surface_defaults_to_nip98_when_auth_unset() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        for token in [
-            VALID_ADMIN_TOKEN.to_string(),
-            format!("  {VALID_ADMIN_TOKEN}\n"),
-        ] {
-            let admin = config_with_admin_env(&[
-                ("BUZZ_ADMIN_HOST", Some("admin.example")),
-                ("BUZZ_ADMIN_TOKEN", Some(&token)),
-            ])
-            .expect("config with a valid admin token")
+        let admin = config_with_admin_env(&[("BUZZ_ADMIN_HOST", Some("admin.example"))])
+            .expect("config with an admin host and no BUZZ_ADMIN_AUTH")
             .admin
             .expect("admin surface is configured");
-            assert_eq!(admin.host, "admin.example");
-            assert!(
-                matches!(admin.auth, crate::config::AdminAuth::Token(ref t) if {
-                    let mut expected = [0u8; 32];
-                    hex::decode_to_slice(VALID_ADMIN_TOKEN, &mut expected).expect("hex fixture");
-                    t.matches(&expected) && !t.matches(&[0u8; 32])
-                })
-            );
-        }
+        assert_eq!(admin.host, "admin.example");
+        assert!(
+            matches!(admin.auth, crate::config::AdminAuth::Nip98),
+            "unset BUZZ_ADMIN_AUTH must default to nip98 (fail-secure)"
+        );
     }
 
     #[test]
     fn admin_host_bare_ipv6_literal_fails_closed() {
         let _guard = ENV_MUTEX.lock().unwrap();
         for host in ["::1", "::1:3000", "fe80::1", "2001:db8::1"] {
-            let result = config_with_admin_env(&[
-                ("BUZZ_ADMIN_HOST", Some(host)),
-                ("BUZZ_ADMIN_TOKEN", Some(VALID_ADMIN_TOKEN)),
-            ]);
+            let result = config_with_admin_env(&[("BUZZ_ADMIN_HOST", Some(host))]);
             assert!(
                 matches!(
                     result,
@@ -1508,10 +1429,7 @@ mod tests {
             "[::1]?x=1",
             "[::1]#frag",
         ] {
-            let result = config_with_admin_env(&[
-                ("BUZZ_ADMIN_HOST", Some(host)),
-                ("BUZZ_ADMIN_TOKEN", Some(VALID_ADMIN_TOKEN)),
-            ]);
+            let result = config_with_admin_env(&[("BUZZ_ADMIN_HOST", Some(host))]);
             assert!(
                 matches!(
                     result,
@@ -1527,13 +1445,10 @@ mod tests {
     fn admin_host_bracketed_ipv6_literal_is_accepted() {
         let _guard = ENV_MUTEX.lock().unwrap();
         for host in ["[::1]", "[::1]:3000", "[2001:db8::1]:8443"] {
-            let admin = config_with_admin_env(&[
-                ("BUZZ_ADMIN_HOST", Some(host)),
-                ("BUZZ_ADMIN_TOKEN", Some(VALID_ADMIN_TOKEN)),
-            ])
-            .unwrap_or_else(|e| panic!("bracketed IPv6 host {host:?} must be accepted: {e:?}"))
-            .admin
-            .expect("admin surface is configured");
+            let admin = config_with_admin_env(&[("BUZZ_ADMIN_HOST", Some(host))])
+                .unwrap_or_else(|e| panic!("bracketed IPv6 host {host:?} must be accepted: {e:?}"))
+                .admin
+                .expect("admin surface is configured");
             assert_eq!(admin.host, host);
         }
     }
@@ -1549,13 +1464,10 @@ mod tests {
             ("Admin.Example.com:8443", "admin.example.com:8443"),
             ("LOCALHOST:3000", "localhost:3000"),
         ] {
-            let admin = config_with_admin_env(&[
-                ("BUZZ_ADMIN_HOST", Some(input)),
-                ("BUZZ_ADMIN_TOKEN", Some(VALID_ADMIN_TOKEN)),
-            ])
-            .unwrap_or_else(|e| panic!("mixed-case host {input:?} must be accepted: {e:?}"))
-            .admin
-            .expect("admin surface is configured");
+            let admin = config_with_admin_env(&[("BUZZ_ADMIN_HOST", Some(input))])
+                .unwrap_or_else(|e| panic!("mixed-case host {input:?} must be accepted: {e:?}"))
+                .admin
+                .expect("admin surface is configured");
             assert_eq!(
                 admin.host, expected,
                 "host {input:?} must be stored as lowercase {expected:?}"
@@ -1564,52 +1476,23 @@ mod tests {
     }
 
     #[test]
-    fn admin_token_without_a_host_leaves_the_surface_disabled() {
+    fn admin_token_without_a_host_fails_closed() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        let config = config_with_admin_env(&[
+        // Even without BUZZ_ADMIN_HOST, a lingering BUZZ_ADMIN_TOKEN is a hard
+        // startup error — token auth was removed and must never be silently
+        // ignored.
+        let result = config_with_admin_env(&[
             ("BUZZ_ADMIN_HOST", None),
-            ("BUZZ_ADMIN_TOKEN", Some(VALID_ADMIN_TOKEN)),
-        ])
-        .expect("a token alone is not a startup error");
-        assert!(config.admin.is_none());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn admin_token_rejects_non_unicode_values() {
-        use std::os::unix::ffi::OsStringExt;
-
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let previous_host = std::env::var_os("BUZZ_ADMIN_HOST");
-        let previous_token = std::env::var_os("BUZZ_ADMIN_TOKEN");
-        std::env::set_var("BUZZ_ADMIN_HOST", "admin.example");
-        std::env::set_var("BUZZ_ADMIN_TOKEN", std::ffi::OsString::from_vec(vec![0xff]));
-
-        let invalid = Config::from_env();
-
-        for (key, value) in [
-            ("BUZZ_ADMIN_HOST", previous_host),
-            ("BUZZ_ADMIN_TOKEN", previous_token),
-        ] {
-            match value {
-                Some(value) => std::env::set_var(key, value),
-                None => std::env::remove_var(key),
-            }
-        }
-
-        assert!(matches!(
-            invalid,
-            Err(ConfigError::InvalidValue(ref message))
-                if message.contains("BUZZ_ADMIN_TOKEN")
-        ));
-    }
-
-    #[test]
-    fn admin_token_debug_output_is_redacted() {
-        let token = AdminToken::from_bytes([7u8; 32]);
-        let rendered = format!("{token:?}");
-        assert_eq!(rendered, "AdminToken(redacted)");
-        assert!(!rendered.contains("07"));
+            ("BUZZ_ADMIN_TOKEN", Some(SOME_ADMIN_TOKEN)),
+        ]);
+        assert!(
+            matches!(
+                result,
+                Err(ConfigError::InvalidValue(ref message))
+                    if message.contains("BUZZ_ADMIN_TOKEN") && message.contains("removed")
+            ),
+            "BUZZ_ADMIN_TOKEN without a host must be rejected: {result:?}"
+        );
     }
 
     #[test]
@@ -1628,25 +1511,6 @@ mod tests {
     }
 
     #[test]
-    fn disabled_mode_and_token_both_set_fails_closed() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let result = config_with_admin_env(&[
-            ("BUZZ_ADMIN_HOST", Some("admin.example")),
-            ("BUZZ_ADMIN_TOKEN", Some(VALID_ADMIN_TOKEN)),
-            ("BUZZ_ADMIN_AUTH", Some("disabled")),
-        ]);
-        assert!(
-            matches!(
-                result,
-                Err(ConfigError::InvalidValue(ref message))
-                    if message.contains("BUZZ_ADMIN_TOKEN")
-                       && message.contains("disabled")
-            ),
-            "both set must be a startup error: {result:?}"
-        );
-    }
-
-    #[test]
     fn admin_auth_junk_values_all_fail_closed() {
         let _guard = ENV_MUTEX.lock().unwrap();
         for junk in [
@@ -1658,6 +1522,8 @@ mod tests {
             "0",
             "on",
             "insecure_no_auth",
+            // "token" is now a junk value — token authentication was removed.
+            "token",
         ] {
             let result = config_with_admin_env(&[
                 ("BUZZ_ADMIN_HOST", Some("admin.example")),
@@ -1676,37 +1542,19 @@ mod tests {
     }
 
     #[test]
-    fn admin_auth_empty_string_is_treated_as_token_mode() {
-        // An empty value (e.g. `BUZZ_ADMIN_AUTH=`) is treated as unset → token mode.
-        // Token mode without a token fails closed with a BUZZ_ADMIN_TOKEN error.
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let result = config_with_admin_env(&[
-            ("BUZZ_ADMIN_HOST", Some("admin.example")),
-            ("BUZZ_ADMIN_TOKEN", None),
-            ("BUZZ_ADMIN_AUTH", Some("")),
-        ]);
-        assert!(
-            matches!(
-                result,
-                Err(ConfigError::InvalidValue(ref message))
-                    if message.contains("BUZZ_ADMIN_TOKEN")
-            ),
-            "empty BUZZ_ADMIN_AUTH should fall through to the token requirement"
-        );
-    }
-
-    #[test]
-    fn admin_auth_explicit_token_mode_behaves_identically_to_unset() {
+    fn admin_auth_empty_string_defaults_to_nip98() {
+        // An empty value (e.g. `BUZZ_ADMIN_AUTH=`) is treated as unset → nip98,
+        // the fail-secure default.
         let _guard = ENV_MUTEX.lock().unwrap();
         let admin = config_with_admin_env(&[
             ("BUZZ_ADMIN_HOST", Some("admin.example")),
-            ("BUZZ_ADMIN_TOKEN", Some(VALID_ADMIN_TOKEN)),
-            ("BUZZ_ADMIN_AUTH", Some("token")),
+            ("BUZZ_ADMIN_TOKEN", None),
+            ("BUZZ_ADMIN_AUTH", Some("")),
         ])
-        .expect("explicit token mode with a valid token is valid")
+        .expect("empty BUZZ_ADMIN_AUTH defaults to nip98")
         .admin
         .expect("admin surface is configured");
-        assert!(matches!(admin.auth, crate::config::AdminAuth::Token(_)));
+        assert!(matches!(admin.auth, crate::config::AdminAuth::Nip98));
     }
 
     #[test]
@@ -1722,25 +1570,6 @@ mod tests {
         .admin
         .expect("admin surface is configured");
         assert!(matches!(admin.auth, crate::config::AdminAuth::Nip98));
-    }
-
-    #[test]
-    fn nip98_mode_and_token_both_set_fails_closed() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let result = config_with_admin_env(&[
-            ("BUZZ_ADMIN_HOST", Some("admin.example")),
-            ("BUZZ_ADMIN_AUTH", Some("nip98")),
-            ("BUZZ_ADMIN_TOKEN", Some(VALID_ADMIN_TOKEN)),
-        ]);
-        assert!(
-            matches!(
-                result,
-                Err(ConfigError::InvalidValue(ref message))
-                    if message.contains("BUZZ_ADMIN_TOKEN")
-                       && message.contains("nip98")
-            ),
-            "nip98 + token must be a startup error: {result:?}"
-        );
     }
 
     #[test]
