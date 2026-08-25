@@ -16,9 +16,10 @@
     only when the admin API is already protected at the network layer (VPN,
     firewall, private ingress). The relay logs a `WARN` on every startup.
     Replaces the former `BUZZ_ADMIN_INSECURE_NO_AUTH=true` variable.
-  - Token (bearer) authentication is not supported: `BUZZ_ADMIN_TOKEN` set at all
-    is a startup error, as is a junk `BUZZ_ADMIN_AUTH` value. `Host`/`Origin`
-    checks are demoted to defense-in-depth in all modes.
+  - Token (bearer) authentication is not supported: a lingering `BUZZ_ADMIN_TOKEN`
+    is ignored with a startup warning, while a junk `BUZZ_ADMIN_AUTH` value is a
+    startup error. `Host`/`Origin` checks are demoted to defense-in-depth in all
+    modes.
 
 ## relay-v0.2.1
 

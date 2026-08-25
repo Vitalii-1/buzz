@@ -19,8 +19,8 @@
     logs a `WARN` on every startup. The dashboard renders directly.
   - Any unrecognised value for `BUZZ_ADMIN_AUTH` is a startup error
     (typo-proofing). Token (bearer) authentication is not supported:
-    `BUZZ_ADMIN_TOKEN` set at all is a startup error — remove it from the
-    environment.
+    a lingering `BUZZ_ADMIN_TOKEN` is ignored with a startup warning — remove it
+    from the environment.
   - `Host`/`Origin` matching is retained in all modes as defense-in-depth.
   - **Migration from the previous `BUZZ_ADMIN_INSECURE_NO_AUTH=true`:** replace
     with `BUZZ_ADMIN_AUTH=disabled`. The behavior is identical.

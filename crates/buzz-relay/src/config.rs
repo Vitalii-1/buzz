@@ -995,12 +995,12 @@ impl Config {
         {
             None => {
                 if std::env::var_os("BUZZ_ADMIN_TOKEN").is_some() {
-                    return Err(ConfigError::InvalidValue(
+                    tracing::warn!(
                         "BUZZ_ADMIN_TOKEN is set but token authentication was removed — \
-                         the admin API now supports only BUZZ_ADMIN_AUTH=nip98 (default) \
-                         or disabled; remove BUZZ_ADMIN_TOKEN from the environment"
-                            .to_string(),
-                    ));
+                         the value is ignored; the admin API now supports only \
+                         BUZZ_ADMIN_AUTH=nip98 (default) or disabled; remove \
+                         BUZZ_ADMIN_TOKEN from the environment"
+                    );
                 }
                 if std::env::var_os("BUZZ_ADMIN_AUTH").is_some() {
                     tracing::warn!(
@@ -1068,16 +1068,16 @@ impl Config {
                 // Parse BUZZ_ADMIN_AUTH. Accepted values: "nip98" (default when
                 // unset or empty) and "disabled". Any other value is a startup
                 // error (typo-proofing). Token authentication was removed —
-                // BUZZ_ADMIN_TOKEN in the environment is a hard startup failure
-                // so a deploy that used to honor a credential cannot silently
-                // ignore it.
+                // BUZZ_ADMIN_TOKEN in the environment is ignored with a startup
+                // warning so a deploy that used to honor a credential learns the
+                // value is now inert without bricking the boot.
                 if std::env::var_os("BUZZ_ADMIN_TOKEN").is_some() {
-                    return Err(ConfigError::InvalidValue(
+                    tracing::warn!(
                         "BUZZ_ADMIN_TOKEN is set but token authentication was removed — \
-                         the admin API now supports only BUZZ_ADMIN_AUTH=nip98 (default) \
-                         or disabled; remove BUZZ_ADMIN_TOKEN from the environment"
-                            .to_string(),
-                    ));
+                         the value is ignored; the admin API now supports only \
+                         BUZZ_ADMIN_AUTH=nip98 (default) or disabled; remove \
+                         BUZZ_ADMIN_TOKEN from the environment"
+                    );
                 }
 
                 let auth = match std::env::var("BUZZ_ADMIN_AUTH")
@@ -1352,30 +1352,37 @@ mod tests {
     }
 
     /// A valid-looking token value, used only to prove that setting
-    /// `BUZZ_ADMIN_TOKEN` is now a hard startup error (token auth was removed).
+    /// `BUZZ_ADMIN_TOKEN` is now ignored with a startup warning and never
+    /// changes the resolved auth mode (token auth was removed).
     const SOME_ADMIN_TOKEN: &str =
         "5f0e1d2c3b4a59687786958493a2b1c0decadebeefcafe0123456789abcdef01";
 
     #[test]
-    fn admin_token_set_fails_closed_at_startup() {
+    fn admin_token_set_is_ignored_and_warns_at_startup() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        // Token authentication was removed. Any BUZZ_ADMIN_TOKEN in the
-        // environment — with a host, or in any mode — is a startup error so a
-        // deploy that used to honor a credential cannot silently ignore it.
-        for auth in [None, Some("nip98"), Some("disabled")] {
-            let result = config_with_admin_env(&[
+        // Token authentication was removed. A lingering BUZZ_ADMIN_TOKEN with a
+        // host is ignored (logged as a warning) and never changes the resolved
+        // auth mode: unset/nip98 stay nip98, disabled stays disabled.
+        for (auth, expected) in [
+            (None, AdminAuth::Nip98),
+            (Some("nip98"), AdminAuth::Nip98),
+            (Some("disabled"), AdminAuth::Disabled),
+        ] {
+            let admin = config_with_admin_env(&[
                 ("BUZZ_ADMIN_HOST", Some("admin.example")),
                 ("BUZZ_ADMIN_TOKEN", Some(SOME_ADMIN_TOKEN)),
                 ("BUZZ_ADMIN_AUTH", auth),
-            ]);
-            assert!(
-                matches!(
-                    result,
-                    Err(ConfigError::InvalidValue(ref message))
-                        if message.contains("BUZZ_ADMIN_TOKEN")
-                           && message.contains("removed")
-                ),
-                "BUZZ_ADMIN_TOKEN with auth={auth:?} must be rejected: {result:?}"
+            ])
+            .unwrap_or_else(|e| {
+                panic!("BUZZ_ADMIN_TOKEN with auth={auth:?} must be ignored: {e:?}")
+            })
+            .admin
+            .expect("admin surface is configured");
+            assert_eq!(admin.host, "admin.example");
+            assert_eq!(
+                std::mem::discriminant(&admin.auth),
+                std::mem::discriminant(&expected),
+                "BUZZ_ADMIN_TOKEN must not change auth mode for auth={auth:?}"
             );
         }
     }
@@ -1476,22 +1483,20 @@ mod tests {
     }
 
     #[test]
-    fn admin_token_without_a_host_fails_closed() {
+    fn admin_token_without_a_host_is_ignored_and_warns() {
         let _guard = ENV_MUTEX.lock().unwrap();
-        // Even without BUZZ_ADMIN_HOST, a lingering BUZZ_ADMIN_TOKEN is a hard
-        // startup error — token auth was removed and must never be silently
-        // ignored.
-        let result = config_with_admin_env(&[
+        // Even without BUZZ_ADMIN_HOST, a lingering BUZZ_ADMIN_TOKEN is ignored
+        // (logged as a warning) — token auth was removed and the admin surface
+        // stays absent because the host is unset, not because of the token.
+        let admin = config_with_admin_env(&[
             ("BUZZ_ADMIN_HOST", None),
             ("BUZZ_ADMIN_TOKEN", Some(SOME_ADMIN_TOKEN)),
-        ]);
+        ])
+        .expect("BUZZ_ADMIN_TOKEN without a host is ignored, not a startup error")
+        .admin;
         assert!(
-            matches!(
-                result,
-                Err(ConfigError::InvalidValue(ref message))
-                    if message.contains("BUZZ_ADMIN_TOKEN") && message.contains("removed")
-            ),
-            "BUZZ_ADMIN_TOKEN without a host must be rejected: {result:?}"
+            admin.is_none(),
+            "admin surface stays absent when the host is unset: {admin:?}"
         );
     }
 

@@ -23,9 +23,9 @@ the mode with `BUZZ_ADMIN_AUTH`, which accepts `nip98` (default when unset) or
 `disabled`.
 
 `BUZZ_ADMIN_TOKEN` is no longer recognised: token authentication was removed.
-Setting it at all is a startup error, so a stale token variable cannot silently
-run a deployment on a removed auth path — remove it from the environment and use
-`nip98` (or `disabled` behind a network boundary).
+Setting it is ignored with a startup warning, so a stale token variable cannot
+silently run a deployment on a removed auth path — remove it from the environment
+and use `nip98` (or `disabled` behind a network boundary).
 
 ### NIP-98 mode (`BUZZ_ADMIN_AUTH=nip98`, default)
 
@@ -175,11 +175,12 @@ proxy-injected shared secret or signed identity header for additional assurance.
 
 `BUZZ_ADMIN_AUTH` accepts exactly `nip98` or `disabled`. Any other non-empty
 value is a startup error (typo-proofing). `BUZZ_ADMIN_TOKEN` is no longer
-recognised and its presence aborts startup regardless of the other variables:
+recognised and its presence is ignored with a startup warning regardless of the
+other variables:
 
 | Combination | Result |
 |---|---|
-| `BUZZ_ADMIN_TOKEN` set (with or without `BUZZ_ADMIN_HOST`) | startup error |
+| `BUZZ_ADMIN_TOKEN` set (with or without `BUZZ_ADMIN_HOST`) | warn + ignore |
 | `BUZZ_ADMIN_AUTH=nip98` with a malformed `RELAY_OWNER_PUBKEY` | startup error |
 | `BUZZ_ADMIN_AUTH` junk value | startup error |
 | `BUZZ_ADMIN_AUTH` without `BUZZ_ADMIN_HOST` | warn + ignore |
@@ -235,16 +236,16 @@ Choose the mode that fits your deployment:
   `BUZZ_ADMIN_AUTH=disabled` in your deploy config, then roll the new version.
 
 **Upgrading from a token-mode release:** token authentication was removed.
-Remove `BUZZ_ADMIN_TOKEN` from the environment — leaving it set is a startup
-error — and adopt `nip98` (populate `RELAY_OPERATOR_PUBKEYS`) or `disabled`
-before rolling the new version.
+Remove `BUZZ_ADMIN_TOKEN` from the environment — leaving it set is ignored with
+a startup warning — and adopt `nip98` (populate `RELAY_OPERATOR_PUBKEYS`) or
+`disabled` before rolling the new version.
 
 **Upgrading from the previous `BUZZ_ADMIN_INSECURE_NO_AUTH=true` variable:**
 replace it with `BUZZ_ADMIN_AUTH=disabled`. Behavior is identical; the old
 variable is no longer recognised.
 
 Relays without `BUZZ_ADMIN_HOST` are completely unaffected, except that a
-lingering `BUZZ_ADMIN_TOKEN` now aborts startup and must be removed.
+lingering `BUZZ_ADMIN_TOKEN` now logs a startup warning and must be removed.
 
 Any non-browser client of `/api/admin/v1` (monitoring probes, scripts, cron
 jobs) must sign each request with a NIP-98 `Authorization: Nostr` header after
