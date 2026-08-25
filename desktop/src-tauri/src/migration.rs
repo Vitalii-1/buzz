@@ -155,8 +155,7 @@ fn run_boot_migrations_inner(app: &tauri::AppHandle, reset_completed: bool) {
     }
 
     if !crate::build_identity::is_demo_build() {
-        migrate_legacy_app_data_dir(app);
-        sync_shared_agent_data(app);
+        migrate_legacy_app_data_dir(app); sync_shared_agent_data(app);
     }
     // Dev-build-only: copy any agent keys that exist in the production
     // keyring ("buzz-desktop") into the dev service ("buzz-desktop-dev")
