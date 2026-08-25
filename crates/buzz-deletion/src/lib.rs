@@ -1816,8 +1816,6 @@ mod postgres_tests {
         )
     }
 
-    #[tokio::test]
-    #[ignore = "requires Postgres"]
     async fn approved_stage_allows_post_inventory_row_churn_before_fencing() {
         let (db, services, claim) = claimed_test_deletion("deletion-row-churn").await;
         let frozen: FrozenInventory = serde_json::from_value(
@@ -2158,6 +2156,12 @@ mod postgres_tests {
     }
 
     mod external_infra_s3_tests {
+        #[tokio::test]
+        #[ignore = "requires Postgres and S3-compatible storage"]
+        async fn approved_stage_allows_post_inventory_row_churn_before_fencing() {
+            super::approved_stage_allows_post_inventory_row_churn_before_fencing().await;
+        }
+
         #[tokio::test]
         #[ignore = "requires Postgres and S3-compatible storage"]
         async fn drained_stage_resumes_chunk_deleted_before_stamp() {
