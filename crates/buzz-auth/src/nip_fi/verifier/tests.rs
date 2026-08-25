@@ -582,9 +582,9 @@ fn cross_issuer_token_cannot_mint_through_any_seam() {
     //    constructor and `IssuerKeySource` is sealed, so external code can
     //    neither put B's JWKS into a snapshot labelled A nor supply its own
     //    source that does. The exploit that minted sealed `(A, victim)` at the
-    //    public verifier constructor no longer type-checks — see the
-    //    `tests/ui/*` compile-fail cases exercised by
-    //    `authority_construction_seam_is_closed_to_external_crates`.
+    //    public verifier constructor no longer type-checks — see the two
+    //    `compile_fail` doctests on `AssertionKeySet` (`verifier.rs:70-73`) and
+    //    `IssuerKeySource` (`verifier.rs:142-148`).
     let issuer_a = "https://a.example";
     let issuer_b = "https://b.example";
 

@@ -86,6 +86,14 @@ impl AssertionKeySet {
     /// generation and optional deadline. A zero generation or empty issuer is
     /// rejected. Crate-private: only the trusted in-crate configuration path
     /// (PR 3's JWKS runtime) may bind key material to an issuer.
+    ///
+    /// Its only current callers are the in-crate `cfg(test)` verifier suite;
+    /// PR 3's JWKS runtime is the intended non-test consumer. Until it lands the
+    /// non-test lib build sees no caller, so this narrowly allows `dead_code`
+    /// for this one constructor rather than deferring it or widening the lint.
+    /// `expect` would misfire: under `cfg(test)` the lint does not trigger, so
+    /// the expectation would be unfulfilled and fail `-D warnings`.
+    #[allow(dead_code)]
     pub(crate) fn new(
         issuer: String,
         generation: u64,
