@@ -268,26 +268,32 @@ desktop-release-build target="aarch64-apple-darwin":
     touch "desktop/src-tauri/binaries/git-credential-nostr-$TARGET"
     touch "desktop/src-tauri/binaries/buzz-$TARGET"
     pnpm install
-    if [[ "$(uname -s)" == "Darwin" && "$TARGET" == *-apple-darwin ]]; then
-        # Tauri's DMG bundler runs Finder AppleScript, which blocks on headless
-        # macOS. Build only the app, then use our hdiutil packager whose Finder
-        # styling is best-effort.
-        cd {{desktop_dir}}
-        pnpm tauri build --features mesh-llm --target "$TARGET" --bundles app
-        cd ..
-        DMG_DIR="desktop/src-tauri/target/$TARGET/release/bundle/dmg"
-        APP_PATH="desktop/src-tauri/target/$TARGET/release/bundle/macos/Buzz.app"
-        DMG_ARCH="${TARGET%%-*}"
-        if [[ "$DMG_ARCH" == "x86_64" ]]; then
-            DMG_ARCH=x64
-        fi
-        VERSION="$(node -p "require('./desktop/package.json').version")"
-        ./desktop/scripts/package-macos-dmg.sh \
-            "$APP_PATH" \
-            "$DMG_DIR/Buzz_${VERSION}_${DMG_ARCH}.dmg"
-    else
-        cd {{desktop_dir}} && pnpm tauri build --features mesh-llm --target "$TARGET"
-    fi
+    cd {{desktop_dir}} && pnpm tauri build --features mesh-llm --target {{target}}
+
+# Build an unsigned named macOS demo DMG with isolated app and runtime identities.
+desktop-demo-build demo_name target="aarch64-apple-darwin":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TARGET={{target}}
+    [[ "$(uname -s)" == "Darwin" && "$TARGET" == *-apple-darwin ]] || { echo "Demo DMGs require a macOS Apple target" >&2; exit 2; }
+    CONFIG_PATH="$(mktemp "${TMPDIR:-/tmp}/buzz-demo-config.XXXXXX.json")"
+    trap 'rm -f "$CONFIG_PATH"' EXIT
+    DEMO_CONFIG="$(node desktop/scripts/demo-build-config.mjs "{{demo_name}}" "$CONFIG_PATH")"
+    read_config() { node -e 'console.log(JSON.parse(process.argv[1])[process.argv[2]])' "$DEMO_CONFIG" "$1"; }
+    PRODUCT_NAME="$(read_config productName)"
+    DMG_VOLUME_NAME="$(read_config dmgVolumeName)"
+    DMG_FILE_STEM="$(read_config dmgFileStem)"
+    DEMO_SLUG="$(read_config slug)"
+    mkdir -p desktop/src-tauri/binaries
+    for bin in buzz-acp buzz-agent buzz-backend-kubernetes buzz-dev-mcp git-credential-nostr buzz; do touch "desktop/src-tauri/binaries/$bin-$TARGET"; done
+    pnpm install
+    cd {{desktop_dir}}
+    BUZZ_BUILD_DEMO_SLUG="$DEMO_SLUG" pnpm tauri build --features mesh-llm --target "$TARGET" --bundles app --config "$CONFIG_PATH"
+    cd ..
+    VERSION="$(node -p "require('./desktop/package.json').version")"
+    DMG_ARCH="${TARGET%%-*}"; [[ "$DMG_ARCH" == "x86_64" ]] && DMG_ARCH=x64
+    APP_PATH="desktop/src-tauri/target/$TARGET/release/bundle/macos/$PRODUCT_NAME.app"
+    VOL_NAME="$DMG_VOLUME_NAME" ./desktop/scripts/package-macos-dmg.sh "$APP_PATH" "desktop/src-tauri/target/$TARGET/release/bundle/dmg/${DMG_FILE_STEM}_${VERSION}_${DMG_ARCH}.dmg"
 
 # Run desktop checks suitable for CI / pre-push
 desktop-ci: desktop-check desktop-test desktop-tauri-fmt-check desktop-build desktop-tauri-check desktop-tauri-test

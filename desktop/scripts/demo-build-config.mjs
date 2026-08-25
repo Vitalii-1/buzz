@@ -1,0 +1,79 @@
+import { writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
+const PRODUCTION_IDENTIFIER = "xyz.block.buzz.app";
+const MAX_DEMO_NAME_LENGTH = 48;
+
+export const productionBuildIdentity = Object.freeze({
+  productName: "Buzz",
+  identifier: PRODUCTION_IDENTIFIER,
+  deepLinkScheme: "buzz",
+  keyringService: "buzz-desktop",
+  nestName: ".buzz",
+  cliName: "buzz",
+});
+
+export function demoBuildConfig(rawName) {
+  if (typeof rawName !== "string") throw new Error("Demo name must be text");
+  const name = rawName.trim().replace(/\s+/g, " ");
+  if (!name) throw new Error("Demo name must not be empty");
+  if (name.length > MAX_DEMO_NAME_LENGTH) {
+    throw new Error(
+      `Demo name must be at most ${MAX_DEMO_NAME_LENGTH} characters`,
+    );
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9 -]*$/.test(name)) {
+    throw new Error(
+      "Demo name may contain ASCII letters, numbers, spaces, and hyphens only",
+    );
+  }
+
+  const slug = name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const productName = `Buzz ${name}`;
+  return {
+    name,
+    slug,
+    productName,
+    dmgVolumeName: productName,
+    dmgFileStem: productName.replace(/ /g, "_"),
+    identifier: `${PRODUCTION_IDENTIFIER}.demo.${slug}`,
+    appDataIdentity: `${PRODUCTION_IDENTIFIER}.demo.${slug}`,
+    deepLinkScheme: `buzz-demo-${slug}`,
+    keyringService: `buzz-desktop-demo.${slug}`,
+    nestName: `.buzz-demo-${slug}`,
+    cliName: `buzz-demo-${slug}`,
+    tauriConfig: {
+      productName,
+      identifier: `${PRODUCTION_IDENTIFIER}.demo.${slug}`,
+      plugins: { "deep-link": { desktop: { schemes: [`buzz-demo-${slug}`] } } },
+      bundle: { targets: ["app"] },
+    },
+  };
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  const [name, outputPath] = process.argv.slice(2);
+  if (!outputPath) {
+    console.error(
+      "Usage: demo-build-config.mjs <demo-name> <output-config-path>",
+    );
+    process.exit(2);
+  }
+  try {
+    const config = demoBuildConfig(name);
+    writeFileSync(
+      outputPath,
+      `${JSON.stringify(config.tauriConfig, null, 2)}\n`,
+    );
+    console.log(JSON.stringify(config));
+  } catch (error) {
+    console.error(`Invalid demo build: ${error.message}`);
+    process.exit(1);
+  }
+}

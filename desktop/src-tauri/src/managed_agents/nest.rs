@@ -88,8 +88,8 @@ static NEST_DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new
 /// when the Tauri app-data directory name starts with `"xyz.block.buzz.app.dev"`.
 /// Pass `false` for production (signed DMG) builds.
 pub fn init_nest_dir(is_dev: bool) {
-    let suffix = if is_dev { NEST_DIR_DEV } else { NEST_DIR_PROD };
-    let path = dirs::home_dir().map(|h| h.join(suffix));
+    let suffix = crate::build_identity::nest_name(is_dev);
+    let path = dirs::home_dir().map(|h| h.join(suffix.as_ref()));
     // set() is a no-op when already initialized, which is correct: only the
     // first call (at boot, before any filesystem work) should win.
     let _ = NEST_DIR.set(path);
@@ -315,12 +315,8 @@ fn ensure_skill_symlinks(_root: &Path) -> Result<(), String> {
 /// Dev builds (`is_dev = true`) use `"buzz-dev"` so that a running DMG and a
 /// concurrent dev build each own a separate link and never clobber each other —
 /// the same isolation that separates `~/.buzz` (prod) from `~/.buzz-dev` (dev).
-pub fn cli_link_name(is_dev: bool) -> &'static str {
-    if is_dev {
-        "buzz-dev"
-    } else {
-        "buzz"
-    }
+pub fn cli_link_name(is_dev: bool) -> std::borrow::Cow<'static, str> {
+    crate::build_identity::cli_name(is_dev)
 }
 
 /// Ensures `~/.local/bin/buzz` (prod) or `~/.local/bin/buzz-dev` (dev) is a
