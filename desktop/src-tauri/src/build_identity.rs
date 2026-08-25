@@ -27,7 +27,11 @@ pub(crate) fn keyring_service() -> Cow<'static, str> {
 }
 
 pub(crate) fn nest_name(is_dev: bool) -> Cow<'static, str> {
-    if let Some(slug) = demo_slug() {
+    nest_name_for(demo_slug(), is_dev)
+}
+
+fn nest_name_for(demo_slug: Option<&str>, is_dev: bool) -> Cow<'_, str> {
+    if let Some(slug) = demo_slug {
         Cow::Owned(format!(".buzz-demo-{slug}"))
     } else if is_dev {
         Cow::Borrowed(".buzz-dev")
@@ -58,5 +62,18 @@ mod tests {
             assert_eq!(nest_name(false), ".buzz");
             assert_eq!(cli_name(false), "buzz");
         }
+    }
+
+    #[test]
+    fn production_and_named_demo_nests_are_distinct() {
+        assert_eq!(nest_name_for(None, false), ".buzz");
+        assert_eq!(
+            nest_name_for(Some("workstream-board"), false),
+            ".buzz-demo-workstream-board"
+        );
+        assert_eq!(
+            nest_name_for(Some("second-demo"), false),
+            ".buzz-demo-second-demo"
+        );
     }
 }
