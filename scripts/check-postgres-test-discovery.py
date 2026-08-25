@@ -157,7 +157,12 @@ def module_ranges(source: str) -> list[tuple[int, int, str]]:
 
 
 def integration_binary_is_postgres(path: Path) -> bool:
-    return "tests" in path.parts and path.name.startswith("postgres_")
+    crate_root = path.parent.parent
+    return (
+        path.parent.name == "tests"
+        and path.name.startswith("postgres_")
+        and (crate_root / "Cargo.toml").is_file()
+    )
 
 
 def validate_file(path: Path) -> list[str]:

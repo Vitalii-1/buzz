@@ -6,7 +6,14 @@ checker="$repo_root/scripts/check-postgres-test-discovery.py"
 fixture_root="$(mktemp -d "${TMPDIR:-/tmp}/buzz-postgres-discovery.XXXXXX")"
 trap 'rm -rf "$fixture_root"' EXIT
 
-mkdir -p "$fixture_root/src" "$fixture_root/tests"
+mkdir -p "$fixture_root/src/tests" "$fixture_root/tests/common"
+
+cat >"$fixture_root/Cargo.toml" <<'TOML'
+[package]
+name = "postgres-discovery-fixture"
+version = "0.0.0"
+edition = "2021"
+TOML
 
 cat >"$fixture_root/src/good.rs" <<'RS'
 #[cfg(test)]
@@ -30,6 +37,27 @@ fn integration_database_test() {}
 RS
 
 python3 "$checker" "$fixture_root"
+
+cat >"$fixture_root/src/tests/postgres_nested.rs" <<'RS'
+#[test]
+#[ignore = "requires PostgreSQL"]
+fn nested_source_module_is_not_an_integration_binary() {}
+RS
+
+cat >"$fixture_root/tests/common/postgres_helper.rs" <<'RS'
+#[test]
+#[ignore = "requires PostgreSQL"]
+fn nested_integration_helper_is_not_an_integration_binary() {}
+RS
+
+if python3 "$checker" "$fixture_root" >"$fixture_root/nested.out" 2>&1; then
+  echo "expected nested postgres_* modules to fail discovery validation" >&2
+  exit 1
+fi
+grep -q "nested_source_module_is_not_an_integration_binary" "$fixture_root/nested.out"
+grep -q "nested_integration_helper_is_not_an_integration_binary" "$fixture_root/nested.out"
+rm "$fixture_root/src/tests/postgres_nested.rs"
+rm "$fixture_root/tests/common/postgres_helper.rs"
 
 cat >"$fixture_root/src/missed.rs" <<'RS'
 #[cfg(test)]
