@@ -25,10 +25,13 @@ async fn acquire_push_gate_lock(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     community: CommunityId,
 ) -> Result<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind(format!("{PUSH_GATE_LOCK_NAMESPACE}{}", community.as_uuid()))
-        .execute(&mut **tx)
-        .await?;
+    crate::observability::observe_advisory_lock(
+        crate::observability::LockType::PushGate,
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(format!("{PUSH_GATE_LOCK_NAMESPACE}{}", community.as_uuid()))
+            .execute(&mut **tx),
+    )
+    .await?;
     Ok(())
 }
 
@@ -222,7 +225,13 @@ pub async fn accept_lease_event(
     max_active_leases: i64,
 ) -> Result<AcceptLeaseOutcome> {
     let author = event.pubkey.as_bytes();
-    let mut tx = pool.begin().await?;
+    let (mut tx, transaction_timer) = crate::observability::begin_transaction(
+        pool,
+        crate::observability::TransactionOperation::AcceptPushLeaseEvent,
+    )
+    .await?;
+    transaction_timer
+        .observe(async {
     let mut address_lock = Vec::with_capacity(16 + author.len() + installation_id.len());
     address_lock.extend_from_slice(community.as_uuid().as_bytes());
     address_lock.extend_from_slice(author);
@@ -238,14 +247,20 @@ pub async fn accept_lease_event(
     let mut author_lock_bytes = [0_u8; 8];
     author_lock_bytes.copy_from_slice(&author_digest[..8]);
     let author_lock = i64::from_le_bytes(author_lock_bytes);
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(address_lock)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("SELECT pg_advisory_xact_lock($1)")
-        .bind(author_lock)
-        .execute(&mut *tx)
-        .await?;
+    crate::observability::observe_advisory_lock(
+        crate::observability::LockType::PushGate,
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(address_lock)
+            .execute(&mut *tx),
+    )
+    .await?;
+    crate::observability::observe_advisory_lock(
+        crate::observability::LockType::PushGate,
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(author_lock)
+            .execute(&mut *tx),
+    )
+    .await?;
     // T1b: an activation can flip the community from "no eligible lease" to
     // "eligible", so it must serialize against the trigger's shared gate lock.
     // Acquired after the address/author locks to keep one global lock order.
@@ -400,6 +415,8 @@ pub async fn accept_lease_event(
     }
     tx.commit().await?;
     Ok(AcceptLeaseOutcome::Accepted)
+        })
+        .await
 }
 
 fn constraint_acceptance_outcome(error: &sqlx::Error) -> Option<AcceptLeaseOutcome> {
@@ -1282,7 +1299,7 @@ mod tests {
     async fn setup_pool() -> PgPool {
         let database_url = std::env::var("BUZZ_TEST_DATABASE_URL")
             .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".into());
+            .unwrap_or_else(|_| "postgres://buzz:buzz_dev@localhost:5432/buzz".into()); // sadscan:disable np.postgres.1 -- local test-only credentials
         let pool = PgPool::connect(&database_url)
             .await
             .expect("connect to test DB");
