@@ -23,51 +23,60 @@
 
 use super::assertion::{CanonicalCapabilities, RevalidationDependencies, VerifiedAssertion};
 use super::config::{
-    is_asymmetric_algorithm, FreshnessClass, IssuerPolicy, IssuerRegistry, TokenClass,
-    TransportContractId, NOSTR_PUBKEY_CLAIM,
+    is_asymmetric_algorithm, ClientSubjectPosture, FreshnessClass, IssuerPolicy, IssuerRegistry,
+    SubjectClass, TokenClass, TransportContractId, MAX_CLIENT_ID_BYTES, MAX_KID_BYTES,
+    MAX_SUBJECT_BYTES, MAX_TOKEN_BYTES, NOSTR_PUBKEY_CLAIM, OAUTH_CLIENT_ID_CLAIM,
 };
 use super::denial::DenialClass;
 use chrono::{DateTime, TimeZone, Utc};
 use jsonwebtoken::jwk::{JwkSet, KeyAlgorithm, PublicKeyUse};
 use jsonwebtoken::{decode, jwk::Jwk, Algorithm, DecodingKey, Validation};
 use nostr::PublicKey;
+use serde::de::{Deserializer, Error as _, MapAccess, Visitor};
 use serde_json::{Map, Value};
+use std::collections::BTreeSet;
 use std::fmt;
 
-/// Maximum accepted compact-JWS length, in bytes.
-const MAX_TOKEN_BYTES: usize = 64 * 1024;
-/// Maximum accepted `kid` length, in bytes.
-const MAX_KID_BYTES: usize = 512;
-/// Maximum accepted subject length, in bytes.
-const MAX_SUBJECT_BYTES: usize = 2_048;
-/// Maximum accepted `client_id` length, in bytes.
-const MAX_CLIENT_ID_BYTES: usize = 2_048;
-
-/// One issuer's key source: a JWKS snapshot with a positive generation and an
-/// optional hard deadline beyond which the snapshot can no longer authorize.
+/// One issuer's key source: a JWKS snapshot bound to the exact `iss` it
+/// authenticates, with a positive generation and an optional hard deadline
+/// beyond which the snapshot can no longer authorize.
+///
+/// The issuer binding is the anti-cross-issuer control (`FI-INV`): a snapshot
+/// authenticates only tokens whose signed `iss` equals [`Self::issuer`], so a
+/// caller cannot supply issuer B's keys to authenticate a token claiming
+/// issuer A. PR 3's JWKS runtime constructs these bound snapshots directly.
 #[derive(Clone)]
 pub struct AssertionKeySet {
+    issuer: String,
     generation: u64,
     jwks: JwkSet,
     hard_deadline: Option<DateTime<Utc>>,
 }
 
 impl AssertionKeySet {
-    /// Seal a parsed JWKS with a positive cache generation and optional deadline.
-    /// A zero generation is rejected.
+    /// Seal a parsed JWKS for exactly one issuer, with a positive cache
+    /// generation and optional deadline. A zero generation or empty issuer is
+    /// rejected.
     pub fn new(
+        issuer: String,
         generation: u64,
         jwks: JwkSet,
         hard_deadline: Option<DateTime<Utc>>,
     ) -> Option<Self> {
-        if generation == 0 {
+        if generation == 0 || issuer.is_empty() {
             return None;
         }
         Some(Self {
+            issuer,
             generation,
             jwks,
             hard_deadline,
         })
+    }
+
+    /// The exact `iss` this snapshot authenticates.
+    pub fn issuer(&self) -> &str {
+        &self.issuer
     }
 
     /// The positive snapshot generation carried into `revalidation_dependencies`.
@@ -118,14 +127,31 @@ impl FederatedAssertionVerifier {
             return Err(VerifierError::MalformedToken);
         }
 
-        // Parse the JOSE header without trusting it. Reject `alg=none`,
-        // symmetric algorithms, any critical header, and a missing/oversized
-        // `kid` before touching claims.
+        // Parse the JOSE header without trusting it. Reject duplicate members,
+        // `alg=none`, symmetric algorithms, any critical header, and a
+        // missing/oversized `kid` before touching claims.
         let header = parse_header(token)?;
+        let signed_issuer = self.unverified_issuer(token)?;
         let policy = self
             .registry
-            .policy_for_issuer(&self.unverified_issuer(token)?)
+            .policy_for_issuer(&signed_issuer)
             .ok_or(VerifierError::UnknownIssuer)?;
+
+        // Bind the key source to the exact signed `iss`: a snapshot may only
+        // authenticate its own issuer's tokens. Without this, a caller could
+        // supply issuer B's keys for a token claiming issuer A and, if B
+        // happens to hold a `kid`-matching key, forge a cross-issuer identity.
+        if key_set.issuer() != policy.issuer() {
+            return Err(VerifierError::IssuerKeyMismatch);
+        }
+
+        // A `current-status` policy requires a runtime status witness this
+        // verifier does not gather (delivered by a later PR). Deny rather than
+        // seal an assertion documented as verified without its mandatory
+        // dependency. PR 3 adds the witness path additively.
+        if policy.freshness() == FreshnessClass::CurrentStatus {
+            return Err(VerifierError::StatusWitnessUnavailable);
+        }
 
         if !policy.algorithms().contains(&header.algorithm) {
             return Err(VerifierError::UnsupportedAlgorithm);
@@ -137,26 +163,30 @@ impl FederatedAssertionVerifier {
         validate_jwk(jwk, header.algorithm)?;
         let key = DecodingKey::from_jwk(jwk).map_err(|_| VerifierError::InvalidKey)?;
 
-        // Verify signature, `iss`, and `aud` only. All time checks are done
-        // manually below for spec-exact arithmetic.
+        // Verify signature, `iss`, and `aud`. jsonwebtoken deserializes claims
+        // with last-wins duplicate handling, so its map is used only for the
+        // signature/iss/aud gate; every value the result depends on is read
+        // from `claims` below, our duplicate-rejecting parse of the same
+        // signature-authenticated payload bytes. A duplicate member fails that
+        // parse, so the two parses can never disagree on an accepted token.
         let mut validation = Validation::new(header.algorithm);
         validation.set_issuer(&[policy.issuer()]);
         validation.set_audience(policy.audiences());
         validation.set_required_spec_claims(&["exp", "iat", "iss", "aud"]);
         validation.validate_exp = false;
         validation.validate_nbf = false;
-        let decoded = decode::<Map<String, Value>>(token, &key, &validation)
+        decode::<Map<String, Value>>(token, &key, &validation)
             .map_err(|_| VerifierError::InvalidSignatureOrClaims)?;
-        let claims = &decoded.claims;
+        let claims = parse_unique_claims(token)?;
 
-        enforce_claim_semantics(policy, claims)?;
+        enforce_claim_semantics(policy, &claims)?;
 
-        let subject = claim_string(claims, policy.subject_claim(), MAX_SUBJECT_BYTES)?;
-        let asserted_key = parse_nostr_pubkey_claim(policy, claims)?;
+        let subject = claim_string(&claims, policy.subject_claim(), MAX_SUBJECT_BYTES)?;
+        let asserted_key = parse_nostr_pubkey_claim(policy, &claims)?;
 
         let now = Utc::now();
-        let deadlines = self.check_time_and_deadlines(policy, key_set, claims, now)?;
-        let capabilities = capture_capabilities(policy, claims);
+        let deadlines = self.check_time_and_deadlines(policy, key_set, &claims, now)?;
+        let capabilities = capture_capabilities(policy, &claims);
 
         Ok(VerifiedAssertion::seal(
             policy.issuer().to_owned(),
@@ -178,7 +208,7 @@ impl FederatedAssertionVerifier {
     }
 
     fn unverified_issuer(&self, token: &str) -> Result<String, VerifierError> {
-        let claims = decode_claims_segment(token)?;
+        let claims = parse_unique_claims(token)?;
         claim_string(&claims, "iss", MAX_SUBJECT_BYTES).map_err(|_| VerifierError::MalformedToken)
     }
 
@@ -238,9 +268,22 @@ pub enum VerifierError {
     /// The compact JWS was empty, oversized, or structurally malformed.
     #[error("malformed token")]
     MalformedToken,
+    /// A protected-header or claim member appeared more than once. Ambiguous
+    /// duplicate members are rejected before any value is trusted.
+    #[error("duplicate member")]
+    DuplicateMember,
     /// No policy is registered for the token's issuer.
     #[error("unknown issuer")]
     UnknownIssuer,
+    /// The supplied key snapshot authenticates a different issuer than the
+    /// token's signed `iss`. The key source is bound to its exact issuer.
+    #[error("issuer/key mismatch")]
+    IssuerKeyMismatch,
+    /// The policy declares `current-status` freshness, whose runtime status
+    /// witness this verifier does not yet gather. Verification defers to the
+    /// status-bearing runtime rather than sealing without the witness.
+    #[error("status witness unavailable")]
+    StatusWitnessUnavailable,
     /// The header algorithm is `none`, symmetric, or outside the policy set.
     #[error("unsupported algorithm")]
     UnsupportedAlgorithm,
@@ -292,7 +335,10 @@ impl VerifierError {
     pub const fn code(self) -> &'static str {
         match self {
             Self::MalformedToken => "nip_fi_malformed_token",
+            Self::DuplicateMember => "nip_fi_duplicate_member",
             Self::UnknownIssuer => "nip_fi_unknown_issuer",
+            Self::IssuerKeyMismatch => "nip_fi_issuer_key_mismatch",
+            Self::StatusWitnessUnavailable => "nip_fi_status_witness_unavailable",
             Self::UnsupportedAlgorithm => "nip_fi_unsupported_algorithm",
             Self::UnsupportedCriticalHeader => "nip_fi_unsupported_critical_header",
             Self::MissingKeyId => "nip_fi_missing_key_id",
@@ -323,8 +369,7 @@ fn parse_header(token: &str) -> Result<ParsedHeader, VerifierError> {
         .filter(|s| !s.is_empty())
         .ok_or(VerifierError::MalformedToken)?;
     let bytes = base64url_decode(segment)?;
-    let header: Map<String, Value> =
-        serde_json::from_slice(&bytes).map_err(|_| VerifierError::MalformedToken)?;
+    let header = parse_unique_object(&bytes)?;
 
     // Any critical extension is unknown to this verifier and denies.
     if header.contains_key("crit") {
@@ -381,7 +426,7 @@ fn parse_algorithm(alg: &str) -> Result<Algorithm, VerifierError> {
 /// Enforce the policy's single token class against the header `typ`.
 fn enforce_token_type(class: &TokenClass, typ: Option<&str>) -> Result<(), VerifierError> {
     match class {
-        TokenClass::AccessTokenAtJwt => match typ {
+        TokenClass::AccessTokenAtJwt { .. } => match typ {
             Some("at+jwt") => Ok(()),
             _ => Err(VerifierError::TokenTypeRejected),
         },
@@ -397,28 +442,37 @@ fn enforce_token_type(class: &TokenClass, typ: Option<&str>) -> Result<(), Verif
 }
 
 /// Enforce class-specific claim rules: `at+jwt` `client_id` presence and
-/// resource-owner/client-subject exclusivity, and named-compatibility
-/// required/forbidden claims (which exclude OIDC ID tokens).
+/// resource-owner/client-subject classification via the issuer's
+/// [`SubjectClassContract`], and named-compatibility required/forbidden claims
+/// (which exclude OIDC ID tokens).
 fn enforce_claim_semantics(
     policy: &IssuerPolicy,
     claims: &Map<String, Value>,
 ) -> Result<(), VerifierError> {
     match policy.token_class() {
-        TokenClass::AccessTokenAtJwt => {
-            let client_id = claims
-                .get("client_id")
+        TokenClass::AccessTokenAtJwt { subject_class } => {
+            // One non-empty bounded `client_id` is mandatory (exact bytes, no
+            // canonicalization).
+            claims
+                .get(OAUTH_CLIENT_ID_CLAIM)
                 .and_then(Value::as_str)
-                .map(str::trim)
                 .filter(|c| !c.is_empty() && c.len() <= MAX_CLIENT_ID_BYTES)
                 .ok_or(VerifierError::ClaimContractRejected)?;
-            // A token whose subject equals its client id is a client-subject
-            // token and is ineligible under a resource-owner policy: it admits
-            // both interpretations, so it denies.
-            let subject = claims.get(policy.subject_claim()).and_then(Value::as_str);
-            if subject == Some(client_id) {
-                return Err(VerifierError::ClaimContractRejected);
+            // Classify the subject from the authenticated marker claim. A value
+            // matching neither set (or the claim absent) is ambiguous and
+            // denies; a client-subject token denies unless the issuer recorded
+            // the non-collision guarantee.
+            let marker = claims
+                .get(subject_class.marker_claim())
+                .and_then(Value::as_str);
+            match subject_class.classify(marker) {
+                Some(SubjectClass::ResourceOwner) => Ok(()),
+                Some(SubjectClass::ClientSubject) => match subject_class.posture() {
+                    ClientSubjectPosture::AcceptNonColliding => Ok(()),
+                    ClientSubjectPosture::Reject => Err(VerifierError::ClaimContractRejected),
+                },
+                None => Err(VerifierError::ClaimContractRejected),
             }
-            Ok(())
         }
         TokenClass::DedicatedNipFi => Ok(()),
         TokenClass::NamedCompatibility {
@@ -530,10 +584,11 @@ fn claim_string(
     claim: &str,
     max_len: usize,
 ) -> Result<String, VerifierError> {
+    // Exact bytes: no trimming or canonicalization. `iss`/`sub` are identity
+    // components; distinct byte strings must stay distinct.
     claims
         .get(claim)
         .and_then(Value::as_str)
-        .map(str::trim)
         .filter(|v| !v.is_empty() && v.len() <= max_len)
         .map(str::to_owned)
         .ok_or(VerifierError::ClaimRejected)
@@ -574,14 +629,64 @@ fn checked_add(at: DateTime<Utc>, delta: chrono::Duration) -> Result<DateTime<Ut
         .ok_or(VerifierError::InvalidTimeBounds)
 }
 
-fn decode_claims_segment(token: &str) -> Result<Map<String, Value>, VerifierError> {
+/// Parse the claims segment as a JSON object, rejecting any duplicate member.
+fn parse_unique_claims(token: &str) -> Result<Map<String, Value>, VerifierError> {
     let segment = token
         .split('.')
         .nth(1)
         .filter(|s| !s.is_empty())
         .ok_or(VerifierError::MalformedToken)?;
     let bytes = base64url_decode(segment)?;
-    serde_json::from_slice(&bytes).map_err(|_| VerifierError::MalformedToken)
+    parse_unique_object(&bytes)
+}
+
+/// Deserialize a JSON object, denying a repeated key. `serde_json`'s default
+/// `Map` deserialization is last-wins, which would let a duplicate `alg`,
+/// `typ`, `iss`, `sub`, or time member be interpreted differently than a
+/// verifier that reads the first occurrence — a parser-differential ambiguity
+/// (NIP-FI.md, "rejects ambiguous protected-header or claim members"). This
+/// visitor rejects the second occurrence outright.
+fn parse_unique_object(bytes: &[u8]) -> Result<Map<String, Value>, VerifierError> {
+    struct UniqueObject;
+
+    impl<'de> Visitor<'de> for UniqueObject {
+        type Value = Map<String, Value>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a JSON object with unique member names")
+        }
+
+        fn visit_map<A: MapAccess<'de>>(self, mut access: A) -> Result<Self::Value, A::Error> {
+            let mut map = Map::new();
+            let mut seen = BTreeSet::new();
+            while let Some(key) = access.next_key::<String>()? {
+                if !seen.insert(key.clone()) {
+                    return Err(A::Error::custom("duplicate member"));
+                }
+                let value = access.next_value::<Value>()?;
+                map.insert(key, value);
+            }
+            Ok(map)
+        }
+    }
+
+    let mut de = serde_json::Deserializer::from_slice(bytes);
+    let map = de
+        .deserialize_map(UniqueObject)
+        .map_err(|e| classify_json_error(&e))?;
+    // Reject trailing bytes after the object (a second concatenated document).
+    de.end().map_err(|_| VerifierError::MalformedToken)?;
+    Ok(map)
+}
+
+/// A duplicate-member custom error maps to [`VerifierError::DuplicateMember`];
+/// every other parse failure is a malformed token.
+fn classify_json_error(error: &serde_json::Error) -> VerifierError {
+    if error.to_string().contains("duplicate member") {
+        VerifierError::DuplicateMember
+    } else {
+        VerifierError::MalformedToken
+    }
 }
 
 fn base64url_decode(segment: &str) -> Result<Vec<u8>, VerifierError> {

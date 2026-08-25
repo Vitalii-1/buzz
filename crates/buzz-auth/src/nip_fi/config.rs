@@ -3,8 +3,8 @@
 //!
 //! Identity is issuer-qualified `(iss, sub)`; there is no single-global-issuer
 //! assumption. An [`IssuerRegistry`] selects exactly one [`IssuerPolicy`] by the
-//! exact `iss` value returned by JWT decoding. Block V1 enables one issuer via
-//! deployment config, but the contract admits any number.
+//! exact `iss` value returned by JWT decoding; a single-issuer deployment is
+//! just a registry of length one.
 //!
 //! Buzz ships the generic OSS contract only: issuer URLs, audiences, and claim
 //! names are deployment configuration, never hardcoded.
@@ -29,10 +29,40 @@ use std::fmt;
 const MAX_URI_LEN: usize = 2_048;
 /// Maximum accepted length of a claim name.
 const MAX_CLAIM_NAME_LEN: usize = 128;
+/// Maximum accepted length of a configured claim value (subject-class markers).
+const MAX_CLAIM_VALUE_LEN: usize = 2_048;
 /// Maximum accepted clock skew, in seconds.
 const MAX_SKEW_SECONDS: u64 = 300;
 /// Maximum accepted assertion age, in seconds.
 const MAX_ASSERTION_AGE_SECONDS: u64 = 86_400;
+
+// Normative size rules for the assertion the verifier bounds before lookup or
+// logging. They live here so they fold into `assertion_policy_id`: a change to
+// any bound moves the ID mechanically. The verifier imports them.
+/// Maximum accepted compact-JWS length, in bytes.
+pub(crate) const MAX_TOKEN_BYTES: usize = 64 * 1024;
+/// Maximum accepted `kid` length, in bytes.
+pub(crate) const MAX_KID_BYTES: usize = 512;
+/// Maximum accepted subject length, in bytes.
+pub(crate) const MAX_SUBJECT_BYTES: usize = 2_048;
+/// Maximum accepted `client_id` length, in bytes.
+pub(crate) const MAX_CLIENT_ID_BYTES: usize = 2_048;
+
+/// The compiled-verifier-behavior fingerprint folded into every
+/// [`AssertionPolicyId`]. It stands in for the normative semantic inputs that
+/// are not otherwise field-encoded: duplicate-member rejection, exact-byte
+/// (non-canonicalizing) identity handling, the JWKS-snapshot key-source
+/// contract (kid selection, generation versioning, hard deadline), claim
+/// capture, and the offline time arithmetic. **Bump on any change to those
+/// semantics** so prepared evidence built against an older contract is
+/// invalidated. Per-policy fields (issuer, class, bounds, …) are hashed
+/// separately and need no bump.
+pub(crate) const VERIFIER_CONTRACT_VERSION: u32 = 1;
+
+/// The transport-contract fingerprint folded into [`TransportContractId`].
+/// **Bump on any change** to the client-attached parsing, attachment,
+/// no-fallback, or context-preservation semantics.
+pub(crate) const TRANSPORT_CONTRACT_VERSION: u32 = 1;
 
 /// The fixed name of the Nostr-key claim ([NIP-FI.md](../../../../docs/nips/NIP-FI.md),
 /// "Assertion validation"). Not configurable: other encodings and aliases deny.
@@ -72,6 +102,10 @@ impl TransportContractId {
     pub fn core_client_attached() -> Self {
         let mut hasher = Sha256::new();
         hasher.update(b"buzz:nip-fi:transport-contract:v1\0");
+        // Explicit contract version: bump on any change to the parsing,
+        // attachment, no-fallback, or context-preservation semantics below so
+        // prepared evidence bound to an older transport contract is invalidated.
+        hasher.update(TRANSPORT_CONTRACT_VERSION.to_be_bytes());
         hash_field(&mut hasher, super::CLIENT_ATTACHED_HEADER.as_bytes());
         hash_field(&mut hasher, b"Bearer");
         // No-fallback, request-attached, one-field, context-preserving.
@@ -94,26 +128,153 @@ impl fmt::Debug for TransportContractId {
     }
 }
 
+/// The RFC 9068 / OAuth 2.0 access-token claim naming the OAuth client. Present
+/// on access tokens, absent on OIDC ID tokens — the generic (non-provider)
+/// marker that makes a named-compatibility policy mutually exclusive with ID
+/// tokens. Not deployment-configurable.
+pub const OAUTH_CLIENT_ID_CLAIM: &str = "client_id";
+
+/// Whether an issuer policy admits tokens whose subject represents the OAuth
+/// client (client-credentials or client-subject tokens).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientSubjectPosture {
+    /// Client-subject tokens are ineligible; only resource-owner tokens admit.
+    Reject,
+    /// Client-subject tokens are eligible. The issuer has guaranteed their
+    /// `(iss, sub)` coordinates cannot collide with resource-owner coordinates
+    /// (NIP-FI.md token-class rule); the operator records that guarantee here.
+    AcceptNonColliding,
+}
+
+impl ClientSubjectPosture {
+    const fn tag(self) -> &'static str {
+        match self {
+            Self::Reject => "client-subject:reject",
+            Self::AcceptNonColliding => "client-subject:accept-non-colliding",
+        }
+    }
+}
+
+/// A closed, issuer-configured contract that classifies an access token's
+/// subject as resource-owner or OAuth-client from one authenticated marker
+/// claim, using mutually exclusive value sets. A token matching both sets or
+/// neither is ambiguous and denies — "admits both interpretations" is
+/// unrepresentable as an accepted result. When client-subject tokens are
+/// admitted, the operator records the non-collision guarantee via
+/// [`ClientSubjectPosture::AcceptNonColliding`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubjectClassContract {
+    marker_claim: String,
+    resource_owner_values: Vec<String>,
+    client_subject_values: Vec<String>,
+    posture: ClientSubjectPosture,
+}
+
+/// The classification of one token's subject under a [`SubjectClassContract`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubjectClass {
+    /// The subject is the human/resource owner.
+    ResourceOwner,
+    /// The subject represents the OAuth client.
+    ClientSubject,
+}
+
+impl SubjectClassContract {
+    /// Build and validate a subject-class contract. The two value sets must be
+    /// non-empty, bounded, and disjoint, so classification is total and
+    /// mutually exclusive. Rejects overlap with [`IssuerPolicyError::NonExclusiveSubjectClass`].
+    pub fn new(
+        marker_claim: String,
+        resource_owner_values: Vec<String>,
+        client_subject_values: Vec<String>,
+        posture: ClientSubjectPosture,
+    ) -> Result<Self, IssuerPolicyError> {
+        if marker_claim.is_empty() || marker_claim.len() > MAX_CLAIM_NAME_LEN {
+            return Err(IssuerPolicyError::InvalidSubjectClaim);
+        }
+        let bounded = |vs: &[String]| {
+            !vs.is_empty()
+                && vs
+                    .iter()
+                    .all(|v| !v.is_empty() && v.len() <= MAX_CLAIM_VALUE_LEN)
+        };
+        if !bounded(&resource_owner_values) || !bounded(&client_subject_values) {
+            return Err(IssuerPolicyError::NonExclusiveSubjectClass);
+        }
+        if resource_owner_values
+            .iter()
+            .any(|v| client_subject_values.contains(v))
+        {
+            return Err(IssuerPolicyError::NonExclusiveSubjectClass);
+        }
+        Ok(Self {
+            marker_claim,
+            resource_owner_values,
+            client_subject_values,
+            posture,
+        })
+    }
+
+    /// The authenticated marker claim classified.
+    pub fn marker_claim(&self) -> &str {
+        &self.marker_claim
+    }
+
+    /// Values marking a resource-owner subject.
+    pub fn resource_owner_values(&self) -> &[String] {
+        &self.resource_owner_values
+    }
+
+    /// Values marking an OAuth-client subject.
+    pub fn client_subject_values(&self) -> &[String] {
+        &self.client_subject_values
+    }
+
+    /// The client-subject admission posture.
+    pub const fn posture(&self) -> ClientSubjectPosture {
+        self.posture
+    }
+
+    /// Classify a marker value. Exactly one set matches or the token is
+    /// ambiguous. Values are compared by exact bytes.
+    pub fn classify(&self, marker_value: Option<&str>) -> Option<SubjectClass> {
+        let value = marker_value?;
+        let ro = self.resource_owner_values.iter().any(|v| v == value);
+        let cs = self.client_subject_values.iter().any(|v| v == value);
+        match (ro, cs) {
+            (true, false) => Some(SubjectClass::ResourceOwner),
+            (false, true) => Some(SubjectClass::ClientSubject),
+            // Disjoint sets make (true, true) impossible; (false, false) is an
+            // unclassifiable subject.
+            _ => None,
+        }
+    }
+}
+
 /// The single token class an issuer policy accepts before parsing claims.
 /// Policy selects exactly one; failure under one class never triggers another.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TokenClass {
     /// RFC 9068 `at+jwt` access token: protected `typ` is exactly `at+jwt`.
     /// Validated under this document's claim contract, not the full RFC 9068
-    /// profile. Requires one non-empty bounded `client_id`; a token whose `sub`
-    /// equals its `client_id` is a client-subject token and denies under a
-    /// resource-owner policy.
-    AccessTokenAtJwt,
+    /// profile. Requires one non-empty bounded `client_id`; its subject is
+    /// classified by an authenticated [`SubjectClassContract`].
+    AccessTokenAtJwt {
+        /// The mutually exclusive resource-owner/client-subject contract.
+        subject_class: SubjectClassContract,
+    },
     /// A dedicated Buzz assertion: protected `typ` is exactly `nip-fi+jwt`.
     DedicatedNipFi,
     /// Named compatibility access token: absent or generic protected `typ=JWT`.
-    /// Only admissible under an explicit policy whose required and forbidden
-    /// claims make it mutually exclusive with every ID-token and other class.
+    /// Only admissible under a policy whose required claims include
+    /// [`OAUTH_CLIENT_ID_CLAIM`], which OIDC ID tokens never carry — making the
+    /// class mutually exclusive with every ID token regardless of `typ`.
     NamedCompatibility {
-        /// Claims that MUST be present; their absence denies.
+        /// Claims that MUST be present; their absence denies. MUST include
+        /// [`OAUTH_CLIENT_ID_CLAIM`].
         required_claims: Vec<String>,
-        /// Claims that MUST be absent; their presence denies. Used to exclude
-        /// OIDC ID tokens (for example `nonce`, `at_hash`, `c_hash`).
+        /// Claims that MUST be absent; their presence denies. Optional
+        /// defense-in-depth (for example `nonce`, `at_hash`, `c_hash`).
         forbidden_claims: Vec<String>,
     },
 }
@@ -121,7 +282,7 @@ pub enum TokenClass {
 impl TokenClass {
     fn discriminant(&self) -> &'static str {
         match self {
-            Self::AccessTokenAtJwt => "at+jwt",
+            Self::AccessTokenAtJwt { .. } => "at+jwt",
             Self::DedicatedNipFi => "nip-fi+jwt",
             Self::NamedCompatibility { .. } => "named-compat",
         }
@@ -187,10 +348,14 @@ pub enum IssuerPolicyError {
     /// `current-status` freshness requires a positive finite `maximum_status_age`.
     #[error("missing maximum status age")]
     MissingMaximumStatusAge,
-    /// A `NamedCompatibility` class declared no required or forbidden claims and
-    /// therefore cannot be mutually exclusive with ID tokens.
+    /// A `NamedCompatibility` class did not require [`OAUTH_CLIENT_ID_CLAIM`] and
+    /// therefore cannot be proven mutually exclusive with OIDC ID tokens.
     #[error("named compatibility policy is not exclusive")]
     NonExclusiveCompatibility,
+    /// A `SubjectClassContract`'s value sets were empty, unbounded, or overlapped,
+    /// so subject classification could not be total and mutually exclusive.
+    #[error("subject class contract is not exclusive")]
+    NonExclusiveSubjectClass,
 }
 
 impl IssuerPolicy {
@@ -208,18 +373,19 @@ impl IssuerPolicy {
         maximum_assertion_age_seconds: u64,
         maximum_status_age_seconds: Option<u64>,
     ) -> Result<Self, IssuerPolicyError> {
-        let issuer = issuer.trim().to_owned();
+        // Identity-bearing strings are validated for bounds but never mutated:
+        // exact `iss`/`aud`/`sub`/claim bytes select policies and form the
+        // identity tuple (NIP-FI.md, "Terms and identifier classes").
         if issuer.is_empty() || issuer.len() > MAX_URI_LEN {
             return Err(IssuerPolicyError::InvalidIssuer);
         }
         if audiences.is_empty()
             || audiences
                 .iter()
-                .any(|a| a.trim().is_empty() || a.len() > MAX_URI_LEN)
+                .any(|a| a.is_empty() || a.len() > MAX_URI_LEN)
         {
             return Err(IssuerPolicyError::InvalidAudiences);
         }
-        let subject_claim = subject_claim.trim().to_owned();
         if subject_claim.is_empty() || subject_claim.len() > MAX_CLAIM_NAME_LEN {
             return Err(IssuerPolicyError::InvalidSubjectClaim);
         }
@@ -240,11 +406,13 @@ impl IssuerPolicy {
             _ => {}
         }
         if let TokenClass::NamedCompatibility {
-            required_claims,
-            forbidden_claims,
+            required_claims, ..
         } = &token_class
         {
-            if required_claims.is_empty() && forbidden_claims.is_empty() {
+            // Exclusivity with OIDC ID tokens is proven, not inferred from an
+            // arbitrary list: the policy MUST require the access-token-only
+            // `client_id` claim, which ID tokens never carry.
+            if !required_claims.iter().any(|c| c == OAUTH_CLIENT_ID_CLAIM) {
                 return Err(IssuerPolicyError::NonExclusiveCompatibility);
             }
         }
@@ -418,16 +586,52 @@ fn derive_assertion_policy_id(
 ) -> AssertionPolicyId {
     let mut hasher = Sha256::new();
     hasher.update(b"buzz:nip-fi:assertion-policy:v1\0");
+    // Compiled-verifier-behavior fingerprint: covers duplicate-member
+    // rejection, exact-byte identity handling, the key-source contract, claim
+    // capture, and time arithmetic — the normative semantics not otherwise
+    // field-encoded. A change to any of them bumps VERIFIER_CONTRACT_VERSION and
+    // moves every policy ID.
+    hasher.update(VERIFIER_CONTRACT_VERSION.to_be_bytes());
+    // Normative size rules (NIP-FI.md "bounds the assertion, headers, claims,
+    // subject, key identifiers … before lookup").
+    for bound in [
+        MAX_TOKEN_BYTES,
+        MAX_KID_BYTES,
+        MAX_SUBJECT_BYTES,
+        MAX_CLIENT_ID_BYTES,
+    ] {
+        hasher.update((bound as u64).to_be_bytes());
+    }
     hash_field(&mut hasher, issuer.as_bytes());
     hash_seq(&mut hasher, audiences.iter().map(String::as_bytes));
     hash_field(&mut hasher, token_class.discriminant().as_bytes());
-    if let TokenClass::NamedCompatibility {
-        required_claims,
-        forbidden_claims,
-    } = token_class
-    {
-        hash_seq(&mut hasher, required_claims.iter().map(String::as_bytes));
-        hash_seq(&mut hasher, forbidden_claims.iter().map(String::as_bytes));
+    match token_class {
+        TokenClass::AccessTokenAtJwt { subject_class } => {
+            hash_field(&mut hasher, subject_class.marker_claim().as_bytes());
+            hash_seq(
+                &mut hasher,
+                subject_class
+                    .resource_owner_values()
+                    .iter()
+                    .map(String::as_bytes),
+            );
+            hash_seq(
+                &mut hasher,
+                subject_class
+                    .client_subject_values()
+                    .iter()
+                    .map(String::as_bytes),
+            );
+            hash_field(&mut hasher, subject_class.posture().tag().as_bytes());
+        }
+        TokenClass::NamedCompatibility {
+            required_claims,
+            forbidden_claims,
+        } => {
+            hash_seq(&mut hasher, required_claims.iter().map(String::as_bytes));
+            hash_seq(&mut hasher, forbidden_claims.iter().map(String::as_bytes));
+        }
+        TokenClass::DedicatedNipFi => {}
     }
     hash_field(&mut hasher, freshness.tag().as_bytes());
     hash_field(&mut hasher, subject_claim.as_bytes());

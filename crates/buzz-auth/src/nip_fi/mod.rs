@@ -31,8 +31,9 @@ pub use assertion::{
     CanonicalCapabilities, FederatedIdentity, RevalidationDependencies, VerifiedAssertion,
 };
 pub use config::{
-    AssertionPolicyId, FreshnessClass, IssuerPolicy, IssuerPolicyError, IssuerRegistry, TokenClass,
-    TransportContractId, NOSTR_PUBKEY_CLAIM,
+    AssertionPolicyId, ClientSubjectPosture, FreshnessClass, IssuerPolicy, IssuerPolicyError,
+    IssuerRegistry, SubjectClass, SubjectClassContract, TokenClass, TransportContractId,
+    NOSTR_PUBKEY_CLAIM, OAUTH_CLIENT_ID_CLAIM,
 };
 pub use denial::DenialClass;
 pub use verifier::{AssertionKeySet, FederatedAssertionVerifier, VerifierError};

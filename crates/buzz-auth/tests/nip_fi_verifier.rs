@@ -4,9 +4,10 @@
 //! multi-issuer `(iss, sub)` selection, against real ES256-signed assertions.
 
 use buzz_auth::{
-    AssertionKeySet, DenialClass, FederatedAssertionVerifier, FreshnessClass, IssuerPolicy,
-    IssuerRegistry, TokenClass, TransportContractId, VerifierError, CLIENT_ATTACHED_HEADER,
-    NOSTR_PUBKEY_CLAIM,
+    AssertionKeySet, ClientSubjectPosture, DenialClass, FederatedAssertionVerifier, FreshnessClass,
+    IssuerPolicy, IssuerPolicyError, IssuerRegistry, SubjectClassContract, TokenClass,
+    TransportContractId, VerifierError, CLIENT_ATTACHED_HEADER, NOSTR_PUBKEY_CLAIM,
+    OAUTH_CLIENT_ID_CLAIM,
 };
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -40,14 +41,36 @@ fn test_jwks(kid: &str) -> JwkSet {
 }
 
 fn key_set() -> AssertionKeySet {
-    AssertionKeySet::new(1, test_jwks(TEST_KID), None).expect("nonzero generation")
+    key_set_for(ISSUER)
+}
+
+fn key_set_for(issuer: &str) -> AssertionKeySet {
+    AssertionKeySet::new(issuer.to_owned(), 1, test_jwks(TEST_KID), None)
+        .expect("nonzero generation, non-empty issuer")
+}
+
+/// A resource-owner/client-subject contract that rejects client-subject tokens.
+/// Resource-owner and client-subject subjects are distinguished by a `sub_type`
+/// marker claim with disjoint value sets.
+fn subject_class_reject() -> SubjectClassContract {
+    SubjectClassContract::new(
+        "sub_type".to_owned(),
+        vec!["user".to_owned()],
+        vec!["client".to_owned()],
+        ClientSubjectPosture::Reject,
+    )
+    .expect("valid subject-class contract")
 }
 
 fn access_token_policy() -> IssuerPolicy {
+    access_token_policy_with(subject_class_reject())
+}
+
+fn access_token_policy_with(subject_class: SubjectClassContract) -> IssuerPolicy {
     IssuerPolicy::new(
         ISSUER.to_owned(),
         vec![AUDIENCE.to_owned()],
-        TokenClass::AccessTokenAtJwt,
+        TokenClass::AccessTokenAtJwt { subject_class },
         FreshnessClass::OfflineJwt,
         "sub".to_owned(),
         vec![Algorithm::ES256],
@@ -105,16 +128,23 @@ fn mint(typ: Option<&str>, kid: &str, mut claims: Value) -> String {
     jsonwebtoken::encode(&header, &claims, &signing_key()).expect("sign")
 }
 
+/// A resource-owner `at+jwt` claim set: valid subject-class marker plus client_id.
+fn resource_owner_claims() -> Value {
+    json!({ "sub": "user-123", "client_id": "app-1", "sub_type": "user" })
+}
+
+/// Base64url-encode a JSON string into a JWS segment.
+fn b64_segment(json_text: &str) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json_text.as_bytes())
+}
+
 // ---- Happy path ----------------------------------------------------------
 
 #[test]
 fn valid_access_token_verifies() {
     let verifier = verifier_with(access_token_policy());
-    let token = mint(
-        Some("at+jwt"),
-        TEST_KID,
-        json!({ "sub": "user-123", "client_id": "app-1" }),
-    );
+    let token = mint(Some("at+jwt"), TEST_KID, resource_owner_claims());
     let assertion = verifier.verify(&token, &key_set()).expect("verifies");
     assert_eq!(assertion.identity().issuer(), ISSUER);
     assert_eq!(assertion.identity().subject(), "user-123");
@@ -131,11 +161,85 @@ fn id_token_denies_even_when_iss_aud_sub_match() {
     let token = mint(
         Some("JWT"),
         TEST_KID,
-        json!({ "sub": "user-123", "client_id": "app-1", "nonce": "n" }),
+        json!({ "sub": "user-123", "client_id": "app-1", "sub_type": "user", "nonce": "n" }),
     );
     let err = verifier.verify(&token, &key_set()).unwrap_err();
     assert_eq!(err, VerifierError::TokenTypeRejected);
     assert_eq!(err.denial_class(), DenialClass::EvidenceRejected);
+}
+
+// ---- Named-compatibility exclusivity vs OIDC ID tokens -------------------
+
+fn named_compat_policy() -> IssuerPolicy {
+    IssuerPolicy::new(
+        ISSUER.to_owned(),
+        vec![AUDIENCE.to_owned()],
+        TokenClass::NamedCompatibility {
+            // Requiring the access-token-only `client_id` claim is what proves
+            // exclusivity with every OIDC ID token.
+            required_claims: vec![OAUTH_CLIENT_ID_CLAIM.to_owned()],
+            forbidden_claims: vec!["nonce".to_owned()],
+        },
+        FreshnessClass::OfflineJwt,
+        "sub".to_owned(),
+        vec![Algorithm::ES256],
+        false,
+        60,
+        3600,
+        None,
+    )
+    .expect("valid named-compat policy")
+}
+
+#[test]
+fn named_compat_policy_requires_client_id_claim() {
+    // A named-compat policy that does not require `client_id` cannot be proven
+    // mutually exclusive with ID tokens, so construction is rejected.
+    let err = IssuerPolicy::new(
+        ISSUER.to_owned(),
+        vec![AUDIENCE.to_owned()],
+        TokenClass::NamedCompatibility {
+            required_claims: vec!["scope".to_owned()],
+            forbidden_claims: vec!["nonce".to_owned()],
+        },
+        FreshnessClass::OfflineJwt,
+        "sub".to_owned(),
+        vec![Algorithm::ES256],
+        false,
+        60,
+        3600,
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(err, IssuerPolicyError::NonExclusiveCompatibility);
+}
+
+#[test]
+fn named_compat_accepts_access_token_with_generic_typ() {
+    let verifier = verifier_with(named_compat_policy());
+    // Generic `typ=JWT` access token carrying `client_id`.
+    let token = mint(
+        Some("JWT"),
+        TEST_KID,
+        json!({ "sub": "user-123", "client_id": "app-1" }),
+    );
+    assert!(verifier.verify(&token, &key_set()).is_ok());
+}
+
+#[test]
+fn named_compat_denies_generic_oidc_id_token() {
+    let verifier = verifier_with(named_compat_policy());
+    // A realistic OIDC ID token: generic `typ`, matching iss/aud/sub, no
+    // `client_id`. It fails the required-claim rule.
+    let token = mint(
+        None,
+        TEST_KID,
+        json!({ "sub": "user-123", "nonce": "abc", "at_hash": "xyz" }),
+    );
+    assert_eq!(
+        verifier.verify(&token, &key_set()).unwrap_err(),
+        VerifierError::ClaimContractRejected
+    );
 }
 
 #[test]
@@ -153,7 +257,38 @@ fn dedicated_class_rejects_at_jwt_typ_and_accepts_nip_fi() {
 #[test]
 fn access_token_without_client_id_denies() {
     let verifier = verifier_with(access_token_policy());
-    let token = mint(Some("at+jwt"), TEST_KID, json!({ "sub": "user-123" }));
+    let token = mint(
+        Some("at+jwt"),
+        TEST_KID,
+        json!({ "sub": "user-123", "sub_type": "user" }),
+    );
+    assert_eq!(
+        verifier.verify(&token, &key_set()).unwrap_err(),
+        VerifierError::ClaimContractRejected
+    );
+}
+
+// ---- Resource-owner / client-subject classification ----------------------
+
+#[test]
+fn resource_owner_marker_verifies() {
+    let verifier = verifier_with(access_token_policy());
+    let token = mint(
+        Some("at+jwt"),
+        TEST_KID,
+        json!({ "sub": "user-123", "client_id": "app-1", "sub_type": "user" }),
+    );
+    assert!(verifier.verify(&token, &key_set()).is_ok());
+}
+
+#[test]
+fn client_subject_marker_denies_under_reject_posture() {
+    let verifier = verifier_with(access_token_policy());
+    let token = mint(
+        Some("at+jwt"),
+        TEST_KID,
+        json!({ "sub": "svc-1", "client_id": "app-1", "sub_type": "client" }),
+    );
     assert_eq!(
         verifier.verify(&token, &key_set()).unwrap_err(),
         VerifierError::ClaimContractRejected
@@ -161,17 +296,49 @@ fn access_token_without_client_id_denies() {
 }
 
 #[test]
-fn access_token_with_subject_equal_client_id_denies() {
+fn client_subject_marker_verifies_under_accept_non_colliding_posture() {
+    let contract = SubjectClassContract::new(
+        "sub_type".to_owned(),
+        vec!["user".to_owned()],
+        vec!["client".to_owned()],
+        ClientSubjectPosture::AcceptNonColliding,
+    )
+    .unwrap();
+    let verifier = verifier_with(access_token_policy_with(contract));
+    let token = mint(
+        Some("at+jwt"),
+        TEST_KID,
+        json!({ "sub": "svc-1", "client_id": "app-1", "sub_type": "client" }),
+    );
+    assert!(verifier.verify(&token, &key_set()).is_ok());
+}
+
+#[test]
+fn unclassifiable_subject_marker_denies() {
+    // A marker value in neither set cannot be classified as resource-owner or
+    // client-subject, so the token is ambiguous and denies.
     let verifier = verifier_with(access_token_policy());
     let token = mint(
         Some("at+jwt"),
         TEST_KID,
-        json!({ "sub": "app-1", "client_id": "app-1" }),
+        json!({ "sub": "user-123", "client_id": "app-1", "sub_type": "mystery" }),
     );
     assert_eq!(
         verifier.verify(&token, &key_set()).unwrap_err(),
         VerifierError::ClaimContractRejected
     );
+}
+
+#[test]
+fn subject_class_contract_rejects_overlapping_value_sets() {
+    let err = SubjectClassContract::new(
+        "sub_type".to_owned(),
+        vec!["user".to_owned(), "shared".to_owned()],
+        vec!["shared".to_owned()],
+        ClientSubjectPosture::Reject,
+    )
+    .unwrap_err();
+    assert_eq!(err, IssuerPolicyError::NonExclusiveSubjectClass);
 }
 
 // ---- Algorithm / key rejection -------------------------------------------
@@ -261,7 +428,7 @@ fn lowercase_hex_nostr_pubkey_is_accepted() {
     let token = mint(
         Some("at+jwt"),
         TEST_KID,
-        json!({ "sub": "u", "client_id": "a", NOSTR_PUBKEY_CLAIM: real }),
+        json!({ "sub": "u", "client_id": "a", "sub_type": "user", NOSTR_PUBKEY_CLAIM: real }),
     );
     let assertion = verifier.verify(&token, &key_set()).expect("verifies");
     assert!(assertion.asserted_key().is_some());
@@ -274,7 +441,7 @@ fn uppercase_nostr_pubkey_denies() {
     let token = mint(
         Some("at+jwt"),
         TEST_KID,
-        json!({ "sub": "u", "client_id": "a", NOSTR_PUBKEY_CLAIM: upper }),
+        json!({ "sub": "u", "client_id": "a", "sub_type": "user", NOSTR_PUBKEY_CLAIM: upper }),
     );
     assert_eq!(
         verifier.verify(&token, &key_set()).unwrap_err(),
@@ -313,7 +480,7 @@ fn expired_assertion_denies() {
     let token = mint(
         Some("at+jwt"),
         TEST_KID,
-        json!({ "sub": "u", "client_id": "a", "iat": now() - 1200, "exp": now() - 600 }),
+        json!({ "sub": "u", "client_id": "a", "sub_type": "user", "iat": now() - 1200, "exp": now() - 600 }),
     );
     assert_eq!(
         verifier.verify(&token, &key_set()).unwrap_err(),
@@ -327,7 +494,7 @@ fn assertion_beyond_maximum_age_denies() {
     let token = mint(
         Some("at+jwt"),
         TEST_KID,
-        json!({ "sub": "u", "client_id": "a", "iat": now() - 4000, "exp": now() + 600 }),
+        json!({ "sub": "u", "client_id": "a", "sub_type": "user", "iat": now() - 4000, "exp": now() + 600 }),
     );
     assert_eq!(
         verifier.verify(&token, &key_set()).unwrap_err(),
@@ -369,14 +536,122 @@ fn same_subject_distinct_issuers_are_distinct_identities() {
         mint(Some("nip-fi+jwt"), TEST_KID, claims)
     };
     let a = verifier
-        .verify(&sign(issuer_a), &key_set())
+        .verify(&sign(issuer_a), &key_set_for(issuer_a))
         .expect("a verifies");
     let b = verifier
-        .verify(&sign(issuer_b), &key_set())
+        .verify(&sign(issuer_b), &key_set_for(issuer_b))
         .expect("b verifies");
     assert_eq!(a.identity().subject(), b.identity().subject());
     assert_ne!(a.identity().issuer(), b.identity().issuer());
     assert_ne!(a.assertion_policy_id(), b.assertion_policy_id());
+}
+
+// ---- Cross-issuer key binding (CRITICAL #1) ------------------------------
+
+#[test]
+fn key_snapshot_bound_to_its_issuer_blocks_cross_issuer_use() {
+    // Two issuers whose policies share every field except `iss`, so only the
+    // key binding — not policy shape — can stop the cross-issuer forgery. The
+    // same test key backs both snapshots, so the signature would otherwise
+    // verify.
+    let issuer_a = "https://a.example";
+    let issuer_b = "https://b.example";
+    let mut registry = IssuerRegistry::new();
+    registry.insert(dedicated_policy(issuer_a));
+    registry.insert(dedicated_policy(issuer_b));
+    let verifier = FederatedAssertionVerifier::new(registry);
+
+    // Token claims issuer A; caller mistakenly supplies issuer B's snapshot.
+    let token = mint(
+        Some("nip-fi+jwt"),
+        TEST_KID,
+        json!({ "sub": "u", "iss": issuer_a }),
+    );
+    assert_eq!(
+        verifier.verify(&token, &key_set_for(issuer_b)).unwrap_err(),
+        VerifierError::IssuerKeyMismatch
+    );
+    // The correctly bound snapshot verifies.
+    assert!(verifier.verify(&token, &key_set_for(issuer_a)).is_ok());
+}
+
+// ---- Duplicate-member rejection (IMPORTANT #2) ---------------------------
+//
+// Duplicate members are rejected while parsing the protected header and the
+// claims segment — both before signature verification — so these tokens carry
+// a dummy signature; the parse denies first.
+
+#[test]
+fn duplicate_claim_member_denies() {
+    let verifier = verifier_with(access_token_policy());
+    // Duplicate `sub`: last-wins parsing would silently pick "attacker".
+    let claims = format!(
+        r#"{{"iss":"{ISSUER}","aud":"{AUDIENCE}","iat":{iat},"exp":{exp},"client_id":"a","sub_type":"user","sub":"victim","sub":"attacker"}}"#,
+        iat = now(),
+        exp = now() + 600,
+    );
+    let header = r#"{"alg":"ES256","kid":"test-key-1","typ":"at+jwt"}"#;
+    let token = format!("{}.{}.AAAA", b64_segment(header), b64_segment(&claims));
+    assert_eq!(
+        verifier.verify(&token, &key_set()).unwrap_err(),
+        VerifierError::DuplicateMember
+    );
+}
+
+#[test]
+fn duplicate_header_member_denies() {
+    let verifier = verifier_with(access_token_policy());
+    // Duplicate `alg` in the protected header; last-wins would read "none".
+    let header = r#"{"alg":"ES256","alg":"none","kid":"test-key-1","typ":"at+jwt"}"#;
+    let claims = format!(
+        r#"{{"iss":"{ISSUER}","aud":"{AUDIENCE}","iat":{iat},"exp":{exp},"client_id":"a","sub":"u","sub_type":"user"}}"#,
+        iat = now(),
+        exp = now() + 600,
+    );
+    let token = format!("{}.{}.AAAA", b64_segment(header), b64_segment(&claims));
+    assert_eq!(
+        verifier.verify(&token, &key_set()).unwrap_err(),
+        VerifierError::DuplicateMember
+    );
+}
+
+// ---- CurrentStatus deferral (IMPORTANT #7) -------------------------------
+
+#[test]
+fn current_status_policy_denies_without_witness() {
+    let policy = IssuerPolicy::new(
+        ISSUER.to_owned(),
+        vec![AUDIENCE.to_owned()],
+        TokenClass::DedicatedNipFi,
+        FreshnessClass::CurrentStatus,
+        "sub".to_owned(),
+        vec![Algorithm::ES256],
+        false,
+        60,
+        3600,
+        Some(120), // maximum_status_age required for current-status
+    )
+    .expect("valid current-status policy");
+    let verifier = verifier_with(policy);
+    let token = mint(Some("nip-fi+jwt"), TEST_KID, json!({ "sub": "u" }));
+    assert_eq!(
+        verifier.verify(&token, &key_set()).unwrap_err(),
+        VerifierError::StatusWitnessUnavailable
+    );
+}
+
+#[test]
+fn subject_bytes_are_preserved_exactly_not_trimmed() {
+    // A subject with surrounding whitespace must survive verbatim: trimming
+    // would collapse distinct byte strings into one identity.
+    let verifier = verifier_with(access_token_policy());
+    let token = mint(
+        Some("at+jwt"),
+        TEST_KID,
+        json!({ "sub": " user-123 ", "client_id": "app-1", "sub_type": "user" }),
+    );
+    let assertion = verifier.verify(&token, &key_set()).expect("verifies");
+    assert_eq!(assertion.identity().subject(), " user-123 ");
 }
 
 // ---- Deterministic contract IDs ------------------------------------------
@@ -387,10 +662,11 @@ fn assertion_policy_id_is_deterministic_and_semantic() {
     let p2 = access_token_policy();
     assert_eq!(p1.id(), p2.id(), "same contract => same id");
 
+    let changed = access_token_policy_with(subject_class_reject());
     let changed = IssuerPolicy::new(
         ISSUER.to_owned(),
         vec![AUDIENCE.to_owned()],
-        TokenClass::AccessTokenAtJwt,
+        changed.token_class().clone(),
         FreshnessClass::OfflineJwt,
         "sub".to_owned(),
         vec![Algorithm::ES256],
@@ -401,6 +677,32 @@ fn assertion_policy_id_is_deterministic_and_semantic() {
     )
     .unwrap();
     assert_ne!(p1.id(), changed.id());
+}
+
+#[test]
+fn assertion_policy_id_moves_with_subject_class_contract() {
+    // The subject-class contract is a normative input to the policy ID.
+    let base = access_token_policy_with(subject_class_reject());
+    let different_values = access_token_policy_with(
+        SubjectClassContract::new(
+            "sub_type".to_owned(),
+            vec!["human".to_owned()], // different resource-owner value set
+            vec!["client".to_owned()],
+            ClientSubjectPosture::Reject,
+        )
+        .unwrap(),
+    );
+    let different_posture = access_token_policy_with(
+        SubjectClassContract::new(
+            "sub_type".to_owned(),
+            vec!["user".to_owned()],
+            vec!["client".to_owned()],
+            ClientSubjectPosture::AcceptNonColliding, // different posture
+        )
+        .unwrap(),
+    );
+    assert_ne!(base.id(), different_values.id());
+    assert_ne!(base.id(), different_posture.id());
 }
 
 #[test]
