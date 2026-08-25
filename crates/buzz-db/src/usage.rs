@@ -361,16 +361,8 @@ mod postgres_tests {
     use nostr::Keys;
     use sqlx::PgPool;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz";
-
-    fn test_database_url() -> String {
-        std::env::var("BUZZ_TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| TEST_DB_URL.to_owned())
-    }
-
     async fn get_pool() -> PgPool {
-        PgPool::connect(&test_database_url())
+        PgPool::connect(&crate::test_support::database_url())
             .await
             .expect("connect to test DB")
     }

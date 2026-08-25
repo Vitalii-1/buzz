@@ -1914,16 +1914,8 @@ mod postgres_tests {
     use nostr::Keys;
     use sqlx::postgres::PgPoolOptions;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1 -- local test-only credentials
-
-    fn test_database_url() -> String {
-        std::env::var("BUZZ_TEST_DATABASE_URL")
-            .or_else(|_| std::env::var("DATABASE_URL"))
-            .unwrap_or_else(|_| TEST_DB_URL.to_owned())
-    }
-
     async fn setup_pool() -> PgPool {
-        PgPool::connect(&test_database_url())
+        PgPool::connect(&crate::test_support::database_url())
             .await
             .expect("connect to test DB")
     }
@@ -2291,8 +2283,7 @@ mod postgres_tests {
     #[tokio::test]
     #[ignore = "requires Postgres"]
     async fn accessible_channel_ids_are_not_truncated_at_one_thousand() {
-        let database_url =
-            std::env::var("BUZZ_TEST_DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.to_string());
+        let database_url = crate::test_support::database_url();
         let pool = PgPool::connect(&database_url)
             .await
             .expect("connect to test DB");
@@ -2330,8 +2321,7 @@ mod postgres_tests {
     #[tokio::test]
     #[ignore = "requires Postgres"]
     async fn get_members_returns_full_roster_beyond_1000() {
-        let database_url =
-            std::env::var("BUZZ_TEST_DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.to_string());
+        let database_url = crate::test_support::database_url();
         let pool = PgPool::connect(&database_url)
             .await
             .expect("connect to test DB");
@@ -3122,7 +3112,7 @@ mod postgres_tests {
         let snapshot_pool = PgPoolOptions::new()
             .max_connections(1)
             .acquire_timeout(std::time::Duration::from_secs(1))
-            .connect(&test_database_url())
+            .connect(&crate::test_support::database_url())
             .await
             .expect("connect one-connection pool");
         let relay_keys = Keys::generate();

@@ -792,17 +792,11 @@ pub async fn run_probe(writer: PgPool, fence: Arc<ReplicaFence>) {
 mod postgres_tests {
     use super::*;
 
-    const TEST_DB_URL: &str = "postgres://buzz:buzz_dev@localhost:5432/buzz"; // sadscan:disable np.postgres.1
-
-    fn test_db_url() -> String {
-        std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| TEST_DB_URL.into())
-    }
-
     /// A private scratch database with migrations applied: the probe tests
     /// mutate the singleton heartbeat row (rewind/rotate), which must never
     /// race the shared dev database or each other.
     async fn scratch_db() -> (PgPool, PgPool, String) {
-        let admin = PgPool::connect(&test_db_url())
+        let admin = PgPool::connect(&crate::test_support::database_url())
             .await
             .expect("connect admin");
         let name = format!("fence_probe_{}", uuid::Uuid::new_v4().simple());
@@ -810,7 +804,7 @@ mod postgres_tests {
             .execute(&admin)
             .await
             .expect("create scratch db");
-        let base = test_db_url();
+        let base = crate::test_support::database_url();
         let idx = base.rfind('/').expect("db url has a path segment");
         let pool = PgPool::connect(&format!("{}/{}", &base[..idx], name))
             .await
@@ -974,19 +968,25 @@ mod postgres_tests {
     #[tokio::test]
     #[ignore = "requires Postgres"]
     async fn migration_schema_sample_writer_sees_open_transactions_and_ignores_idle() {
-        let pool = PgPool::connect(&test_db_url()).await.expect("connect");
+        let pool = PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect");
         crate::migration::run_migrations(&pool)
             .await
             .expect("apply migration schema");
 
         // A plain idle session: pinned connection, no transaction.
-        let idle_pool = PgPool::connect(&test_db_url()).await.expect("connect idle");
+        let idle_pool = PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect idle");
         let _idle_conn = idle_pool.acquire().await.expect("idle conn");
 
         let before = sample_writer(&pool).await.expect("sample without tx");
 
         // Now hold a transaction open on a second connection.
-        let tx_pool = PgPool::connect(&test_db_url()).await.expect("connect tx");
+        let tx_pool = PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect tx");
         let mut tx = tx_pool.begin().await.expect("begin");
         sqlx::query("SELECT 1")
             .execute(&mut *tx)
@@ -1020,11 +1020,15 @@ mod postgres_tests {
     #[tokio::test]
     #[ignore = "requires Postgres"]
     async fn sample_writer_fails_closed_when_activity_is_masked() {
-        let admin = PgPool::connect(&test_db_url()).await.expect("connect");
+        let admin = PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect");
 
         // Hold a transaction open as the privileged user: this is the row
         // the unprivileged probe must notice it cannot classify.
-        let tx_pool = PgPool::connect(&test_db_url()).await.expect("connect tx");
+        let tx_pool = PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect tx");
         let mut tx = tx_pool.begin().await.expect("begin");
         sqlx::query("SELECT 1")
             .execute(&mut *tx)
@@ -1041,7 +1045,7 @@ mod postgres_tests {
         .await
         .expect("create unprivileged role");
 
-        let base = test_db_url();
+        let base = crate::test_support::database_url();
         let unpriv_url = {
             let rest = base.strip_prefix("postgres://").expect("pg url");
             let at = rest.rfind('@').expect("credentials in url");
@@ -1082,7 +1086,9 @@ mod postgres_tests {
     #[tokio::test]
     #[ignore = "requires Postgres"]
     async fn aurora_identity_probe_reports_false_on_plain_postgres() {
-        let pool = PgPool::connect(&test_db_url()).await.expect("connect");
+        let pool = PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect");
         let mut conn = pool.acquire().await.expect("conn");
         assert!(
             !reader_supports_aurora_identity(&mut conn)
