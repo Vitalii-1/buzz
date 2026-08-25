@@ -1351,6 +1351,69 @@ mod tests {
         config
     }
 
+    /// Like `config_with_admin_env`, but also captures the tracing output
+    /// emitted during `Config::from_env()` so a test can assert the startup
+    /// warning fired. The `BUZZ_ADMIN_TOKEN` warning is the sole behavioral
+    /// value of retaining the guards (the variable is otherwise inert), so it
+    /// must be regression-protected: deleting a warn block has to fail a test.
+    fn config_with_admin_env_capturing_logs(
+        values: &[(&str, Option<&str>)],
+    ) -> (Result<Config, ConfigError>, String) {
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct CapturingMakeWriter {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+        struct CapturingWriter {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+        impl std::io::Write for CapturingWriter {
+            fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+                self.buf.lock().unwrap().extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturingMakeWriter {
+            type Writer = CapturingWriter;
+            fn make_writer(&'a self) -> Self::Writer {
+                CapturingWriter {
+                    buf: Arc::clone(&self.buf),
+                }
+            }
+        }
+
+        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(CapturingMakeWriter {
+                buf: Arc::clone(&buf),
+            })
+            .with_ansi(false)
+            .finish();
+        let config =
+            tracing::subscriber::with_default(subscriber, || config_with_admin_env(values));
+        let captured = String::from_utf8(buf.lock().unwrap().clone()).unwrap_or_default();
+        (config, captured)
+    }
+
+    /// Assert `captured` contains a WARN naming the removal of `BUZZ_ADMIN_TOKEN`
+    /// so the migration breadcrumb Will's ruling preserved cannot silently regress.
+    fn assert_admin_token_removal_warning(captured: &str) {
+        assert!(
+            captured.contains("WARN"),
+            "expected a WARN line: {captured:?}"
+        );
+        for needle in ["BUZZ_ADMIN_TOKEN", "removed", "ignored"] {
+            assert!(
+                captured.contains(needle),
+                "WARN must mention {needle:?}: {captured:?}"
+            );
+        }
+    }
+
     /// A valid-looking token value, used only to prove that setting
     /// `BUZZ_ADMIN_TOKEN` is now ignored with a startup warning and never
     /// changes the resolved auth mode (token auth was removed).
@@ -1368,22 +1431,24 @@ mod tests {
             (Some("nip98"), AdminAuth::Nip98),
             (Some("disabled"), AdminAuth::Disabled),
         ] {
-            let admin = config_with_admin_env(&[
+            let (config, logs) = config_with_admin_env_capturing_logs(&[
                 ("BUZZ_ADMIN_HOST", Some("admin.example")),
                 ("BUZZ_ADMIN_TOKEN", Some(SOME_ADMIN_TOKEN)),
                 ("BUZZ_ADMIN_AUTH", auth),
-            ])
-            .unwrap_or_else(|e| {
-                panic!("BUZZ_ADMIN_TOKEN with auth={auth:?} must be ignored: {e:?}")
-            })
-            .admin
-            .expect("admin surface is configured");
+            ]);
+            let admin = config
+                .unwrap_or_else(|e| {
+                    panic!("BUZZ_ADMIN_TOKEN with auth={auth:?} must be ignored: {e:?}")
+                })
+                .admin
+                .expect("admin surface is configured");
             assert_eq!(admin.host, "admin.example");
             assert_eq!(
                 std::mem::discriminant(&admin.auth),
                 std::mem::discriminant(&expected),
                 "BUZZ_ADMIN_TOKEN must not change auth mode for auth={auth:?}"
             );
+            assert_admin_token_removal_warning(&logs);
         }
     }
 
@@ -1488,16 +1553,18 @@ mod tests {
         // Even without BUZZ_ADMIN_HOST, a lingering BUZZ_ADMIN_TOKEN is ignored
         // (logged as a warning) — token auth was removed and the admin surface
         // stays absent because the host is unset, not because of the token.
-        let admin = config_with_admin_env(&[
+        let (config, logs) = config_with_admin_env_capturing_logs(&[
             ("BUZZ_ADMIN_HOST", None),
             ("BUZZ_ADMIN_TOKEN", Some(SOME_ADMIN_TOKEN)),
-        ])
-        .expect("BUZZ_ADMIN_TOKEN without a host is ignored, not a startup error")
-        .admin;
+        ]);
+        let admin = config
+            .expect("BUZZ_ADMIN_TOKEN without a host is ignored, not a startup error")
+            .admin;
         assert!(
             admin.is_none(),
             "admin surface stays absent when the host is unset: {admin:?}"
         );
+        assert_admin_token_removal_warning(&logs);
     }
 
     #[test]
