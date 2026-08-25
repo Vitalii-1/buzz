@@ -113,6 +113,7 @@ jobs:
     name: Run Codex Security Review
     needs: prepare-review
     runs-on: ubuntu-latest
+    environment: codex-review
     timeout-minutes: 30
     concurrency:
       group: codex-security-review-${{ needs.prepare-review.outputs.pr_number }}
