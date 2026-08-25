@@ -37,6 +37,11 @@ the default lane. Do not rerun migrations against a desired-state database.
 When behavior should match in both schema paths, add explicit desired-state and
 migration-applied coverage rather than making the bootstrap implicit.
 
+Tests that inspect cluster-wide PostgreSQL state or open least-privilege
+sessions include `cluster_global_` in the function name. Migration-backed cases
+use `migration_schema_cluster_global_`. Nextest serializes this small group
+because separate databases still share `pg_stat_activity` and roles.
+
 ## Run the lane locally
 
 Start native PostgreSQL and Redis, activate Hermit, and run:

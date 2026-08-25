@@ -247,6 +247,11 @@ with `BUZZ_TEST_SCHEMA_MODE=migration`. Test helpers that normally call the
 migrator honor `BUZZ_TEST_SCHEMA_MODE=desired` so the desired-state contract is
 not re-migrated.
 
+Tests that inspect cluster-wide PostgreSQL state or open least-privilege
+sessions use a `cluster_global_` function-name segment; migration-backed cases
+use `migration_schema_cluster_global_`. Nextest serializes this small group
+while the database-isolated remainder stays parallel.
+
 The setup process requires a PostgreSQL role that can create and drop databases
 and owns the databases it creates; the harness itself does not require
 superuser access. The complete inventory includes privilege-boundary tests that

@@ -65,6 +65,51 @@ grep -q "nested_integration_helper_is_not_an_integration_binary" "$fixture_root/
 rm "$fixture_root/src/tests/postgres_nested.rs"
 rm "$fixture_root/tests/common/postgres_helper.rs"
 
+cat >"$fixture_root/src/external_postgres_only.rs" <<'RS'
+#[cfg(test)]
+mod postgres_tests {
+    mod external_infra_tests {
+        #[test]
+        #[ignore = "requires PostgreSQL"]
+        fn postgres_only_test_cannot_hide_under_external_infra() {}
+    }
+}
+RS
+
+if python3 "$checker" "$fixture_root" >"$fixture_root/external-postgres.out" 2>&1; then
+  echo "expected a PostgreSQL-only external-infra test to fail validation" >&2
+  exit 1
+fi
+grep -q "postgres_only_test_cannot_hide_under_external_infra" \
+  "$fixture_root/external-postgres.out"
+rm "$fixture_root/src/external_postgres_only.rs"
+
+cat >"$fixture_root/src/bare_ignore.rs" <<'RS'
+#[cfg(test)]
+mod postgres_tests {
+    #[test]
+    #[ignore]
+    fn bare_ignore_in_postgres_module_has_no_classification() {}
+}
+RS
+
+cat >"$fixture_root/tests/postgres_bare.rs" <<'RS'
+#[test]
+#[ignore]
+fn bare_ignore_in_postgres_binary_has_no_classification() {}
+RS
+
+if python3 "$checker" "$fixture_root" >"$fixture_root/bare-ignore.out" 2>&1; then
+  echo "expected bare ignores in PostgreSQL structures to fail validation" >&2
+  exit 1
+fi
+grep -q "bare_ignore_in_postgres_module_has_no_classification" \
+  "$fixture_root/bare-ignore.out"
+grep -q "bare_ignore_in_postgres_binary_has_no_classification" \
+  "$fixture_root/bare-ignore.out"
+rm "$fixture_root/src/bare_ignore.rs"
+rm "$fixture_root/tests/postgres_bare.rs"
+
 cat >"$fixture_root/src/missed.rs" <<'RS'
 #[cfg(test)]
 mod tests {

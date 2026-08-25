@@ -967,7 +967,8 @@ mod postgres_tests {
     /// sessions, per the agreed classification.
     #[tokio::test]
     #[ignore = "requires Postgres"]
-    async fn migration_schema_sample_writer_sees_open_transactions_and_ignores_idle() {
+    async fn migration_schema_cluster_global_sample_writer_sees_open_transactions_and_ignores_idle()
+    {
         let pool = PgPool::connect(&crate::test_support::database_url())
             .await
             .expect("connect");
@@ -1019,7 +1020,7 @@ mod postgres_tests {
     /// never silently `MIN()` the hidden row away.
     #[tokio::test]
     #[ignore = "requires Postgres"]
-    async fn sample_writer_fails_closed_when_activity_is_masked() {
+    async fn cluster_global_sample_writer_fails_closed_when_activity_is_masked() {
         let admin = PgPool::connect(&crate::test_support::database_url())
             .await
             .expect("connect");

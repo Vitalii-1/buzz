@@ -9,6 +9,7 @@ import tomllib
 from pathlib import Path
 
 IGNORE_ATTRIBUTE = re.compile(r"#\s*\[\s*ignore\s*=")
+BARE_IGNORE_ATTRIBUTE = re.compile(r"#\s*\[\s*ignore\s*\]")
 FUNCTION = re.compile(r"\b(?:async\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 MODULE = re.compile(r"\bmod\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{")
 EXTERNAL_INFRA = re.compile(r"\b(?:s3|minio|storage|docker|network)\b", re.IGNORECASE)
@@ -218,6 +219,23 @@ def validate_file(path: Path) -> list[str]:
     ranges = module_ranges(source)
     errors = []
 
+    for match in BARE_IGNORE_ATTRIBUTE.finditer(sanitized):
+        function = FUNCTION.search(sanitized, match.end())
+        if function is None:
+            errors.append(f"{path}: ignored infrastructure test has no following function")
+            continue
+        modules = [name for start, end, name in ranges if start < match.start() < end]
+        in_postgres_structure = (
+            any(name.endswith("postgres_tests") for name in modules)
+            or integration_binary_is_postgres(path)
+        )
+        if in_postgres_structure:
+            errors.append(
+                f"{path}:{source.count(chr(10), 0, function.start()) + 1}: "
+                f"{function.group('name')} uses bare #[ignore] in PostgreSQL discovery; "
+                'use #[ignore = "requires PostgreSQL"] or an explicit external-infra reason'
+            )
+
     for attribute_start, attribute_end, reason in ignore_attributes(source, sanitized):
         reason_lower = reason.lower()
         mentions_postgres = "postgres" in reason_lower or "postgresql" in reason_lower
@@ -251,6 +269,12 @@ def validate_file(path: Path) -> list[str]:
                 f"{path}:{source.count(chr(10), 0, function.start()) + 1}: "
                 f"{function_name} requires infrastructure beyond PostgreSQL/Redis; "
                 "move it under an external_infra* module"
+            )
+        elif mentions_postgres and in_external_module and not needs_external_infra:
+            errors.append(
+                f"{path}:{source.count(chr(10), 0, function.start()) + 1}: "
+                f"{function_name} requires only PostgreSQL/Redis but is excluded by an "
+                "external_infra* module; move it into PostgreSQL discovery"
             )
         elif mentions_postgres and not needs_external_infra and not in_postgres_lane:
             errors.append(
