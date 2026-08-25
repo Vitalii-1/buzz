@@ -3,7 +3,7 @@
 
 ``just benchmark`` wraps this script. Terminal-Bench defaults remain
 leaderboard-eligible (2.1, 5 attempts per problem, the Sonnet+Haiku team).
-Buzz-native tasks use their ``evaluation_layer`` metadata: conformance runs
+Buzz-native tasks use their ``evaluation_layer`` metadata: regression runs
 default to 1 attempt and workflow runs default to 3. The script owns
 everything around the run:
 
@@ -58,8 +58,8 @@ GUI_BUNDLE_IDENTIFIER = "xyz.block.buzz.app.benchmark"
 DEFAULT_DATASET = "terminal-bench/terminal-bench-2-1"
 DEFAULT_ATTEMPTS = 5
 BUZZ_DATASET_ROOT = REPO_ROOT / "benchmarks" / "buzz-dataset"
-EVALUATION_LAYERS = ("conformance", "workflow")
-LAYER_DEFAULT_ATTEMPTS = {"conformance": 1, "workflow": 3}
+EVALUATION_LAYERS = ("regression", "workflow")
+LAYER_DEFAULT_ATTEMPTS = {"regression": 1, "workflow": 3}
 DEFAULT_MANIFEST = PACKAGE_ROOT / "manifests" / "tb-cobol-sonnet-haiku.yaml"
 DEFAULT_ENDPOINTS = PACKAGE_ROOT / "testbed" / "endpoints" / "anthropic-live.json"
 SCHEMA_SQL = PACKAGE_ROOT / "testbed" / "sql" / "benchmark_schema.sql"
@@ -134,7 +134,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "-k",
         type=int,
         default=None,
-        help="Runs per problem (default: Terminal-Bench 5, Buzz conformance 1, "
+        help="Runs per problem (default: Terminal-Bench 5, Buzz regression 1, "
         "Buzz workflow 3)",
     )
     parser.add_argument(

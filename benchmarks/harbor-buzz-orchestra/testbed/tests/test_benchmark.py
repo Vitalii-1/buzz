@@ -70,7 +70,7 @@ def test_buzz_task_metadata_defines_the_expected_layers():
         for layer in benchmark.EVALUATION_LAYERS
     }
     assert by_layer == {
-        "conformance": {
+        "regression": {
             "reply-to-thread",
             "user-mention",
             "read-named-path-outside-workspace",
@@ -105,7 +105,7 @@ def test_buzz_task_metadata_rejects_missing_or_unknown_layers(
         benchmark.buzz_tasks_for_path(dataset)
 
 
-@pytest.mark.parametrize(("layer", "attempts"), [("conformance", 1), ("workflow", 3)])
+@pytest.mark.parametrize(("layer", "attempts"), [("regression", 1), ("workflow", 3)])
 def test_layer_selects_metadata_and_uses_its_default_attempts(layer, attempts):
     args = benchmark.parse_args(
         ["--path", str(benchmark.BUZZ_DATASET_ROOT), "--layer", layer]
@@ -126,7 +126,7 @@ def test_omitted_layer_splits_buzz_dataset_into_two_jobs():
 
     assert [run.attempts for run in runs] == [1, 3]
     assert [run.job_name.rsplit("-", 1)[-1] for run in runs] == [
-        "conformance",
+        "regression",
         "workflow",
     ]
     assert set(runs[0].include_task).isdisjoint(runs[1].include_task)
@@ -167,7 +167,7 @@ def test_explicit_attempts_override_keeps_one_mixed_buzz_job():
 
 def test_invalid_layer_is_rejected():
     with pytest.raises(SystemExit):
-        benchmark.parse_args(["--layer", "regression"])
+        benchmark.parse_args(["--layer", "conformance"])
 
     args = benchmark.parse_args(
         ["--dataset", "terminal-bench/x", "--layer", "workflow"]

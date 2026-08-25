@@ -81,10 +81,10 @@ just benchmark \
 ```
 
 Buzz-native tasks declare one of two evaluation layers in `task.toml`.
-**Conformance** tasks are deterministic product/prompt regression checks and
+**Regression** tasks are deterministic product/prompt regression checks and
 default to k=1. **Workflow** tasks exercise multi-step collaboration
 capabilities and default to k=3 (not 5). Run a layer by metadata with
-`--path benchmarks/buzz-dataset --layer conformance` or `--layer workflow`;
+`--path benchmarks/buzz-dataset --layer regression` or `--layer workflow`;
 task identities stay unchanged.
 
 When the Buzz dataset root is passed without `--layer` or `--attempts`, the
@@ -143,7 +143,7 @@ schema, and defaults to leaderboard-eligible settings (Terminal-Bench 2.1,
 ```bash
 just benchmark                                   # full TB 2.1, k=5
 just benchmark --path <TASK_DIR> -k 1            # one local task, one attempt
-just benchmark --path benchmarks/buzz-dataset --layer conformance  # Buzz k=1
+just benchmark --path benchmarks/buzz-dataset --layer regression   # Buzz k=1
 just benchmark --path benchmarks/buzz-dataset --layer workflow     # Buzz k=3
 just benchmark -i "cobol*" --attempts 3          # dataset subset
 just benchmark --gui                             # watch the run live
