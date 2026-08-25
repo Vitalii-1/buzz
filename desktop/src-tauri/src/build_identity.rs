@@ -14,15 +14,21 @@ pub(crate) fn is_demo_build() -> bool {
     demo_slug().is_some()
 }
 
+pub(crate) const DEMO_AGENT_CONFIG_ENV: &str = "BUZZ_AGENT_CONFIG_DIR";
+
 pub(crate) fn demo_config_home() -> Option<std::path::PathBuf> {
     demo_config_home_for(demo_slug(), dirs::config_dir())
+}
+
+pub(crate) fn demo_agent_oauth_cache_dir() -> Option<std::path::PathBuf> {
+    demo_config_home().map(|dir| dir.join("buzz-agent").join("oauth"))
 }
 
 /// Keep child config caches inside this demo build's identity. In particular,
 /// bundled buzz-agent OAuth tokens must not read or write production's root.
 pub(crate) fn apply_demo_config_home(command: &mut std::process::Command) {
     if let Some(config_home) = demo_config_home() {
-        command.env("XDG_CONFIG_HOME", config_home);
+        command.env(DEMO_AGENT_CONFIG_ENV, config_home);
     }
 }
 
@@ -96,15 +102,25 @@ mod tests {
     }
 
     #[test]
-    fn demo_agent_config_home_is_build_scoped() {
-        let base = std::path::PathBuf::from("/config");
+    fn demo_agent_config_and_oauth_roots_are_build_scoped() {
+        let base = std::path::PathBuf::from("/Users/demo/Library/Application Support");
         assert_eq!(demo_config_home_for(None, Some(base.clone())), None);
+        let first =
+            demo_config_home_for(Some("board-1234567812345678"), Some(base.clone())).unwrap();
+        let second = demo_config_home_for(Some("board-8765432187654321"), Some(base)).unwrap();
         assert_eq!(
-            demo_config_home_for(Some("board-1234567812345678"), Some(base)),
-            Some(std::path::PathBuf::from(
-                "/config/buzz-demo-board-1234567812345678"
-            ))
+            first,
+            std::path::PathBuf::from(
+                "/Users/demo/Library/Application Support/buzz-demo-board-1234567812345678"
+            )
         );
+        assert_eq!(
+            first.join("buzz-agent/oauth"),
+            std::path::PathBuf::from(
+                "/Users/demo/Library/Application Support/buzz-demo-board-1234567812345678/buzz-agent/oauth"
+            )
+        );
+        assert_ne!(first, second);
     }
 
     #[test]

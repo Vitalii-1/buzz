@@ -445,6 +445,29 @@ fn is_expired(t: &CachedToken) -> bool {
     now + TOKEN_REFRESH_LEEWAY.as_secs() >= exp
 }
 
+const BUZZ_AGENT_CONFIG_DIR_ENV: &str = "BUZZ_AGENT_CONFIG_DIR";
+
+fn oauth_cache_root_for(
+    config_override: Option<PathBuf>,
+    home_dir: Option<PathBuf>,
+) -> Result<PathBuf, AgentError> {
+    if let Some(root) = config_override {
+        return Ok(root.join("buzz-agent").join("oauth"));
+    }
+    Ok(home_dir
+        .ok_or_else(|| AgentError::Llm("oauth cache: home directory not found".into()))?
+        .join(".config")
+        .join("buzz-agent")
+        .join("oauth"))
+}
+
+fn default_oauth_cache_root() -> Result<PathBuf, AgentError> {
+    oauth_cache_root_for(
+        std::env::var_os(BUZZ_AGENT_CONFIG_DIR_ENV).map(PathBuf::from),
+        dirs::home_dir(),
+    )
+}
+
 fn cache_path_for(cfg: &PkceOAuthConfig) -> Result<PathBuf, AgentError> {
     let mut h = sha2::Sha256::new();
     h.update(cfg.discovery_url.as_bytes());
@@ -456,11 +479,7 @@ fn cache_path_for(cfg: &PkceOAuthConfig) -> Result<PathBuf, AgentError> {
 
     let dir = match &cfg.cache_dir_override {
         Some(p) => p.join(&cfg.cache_namespace),
-        None => dirs::config_dir()
-            .ok_or_else(|| AgentError::Llm("oauth cache: config directory not found".into()))?
-            .join("buzz-agent")
-            .join("oauth")
-            .join(&cfg.cache_namespace),
+        None => default_oauth_cache_root()?.join(&cfg.cache_namespace),
     };
     Ok(dir.join(format!("{hash}.json")))
 }
@@ -862,7 +881,41 @@ mod tests {
     }
 
     #[test]
-    fn cache_path_uses_platform_config_directory() {
+    fn production_and_demo_oauth_roots_are_concrete_and_distinct() {
+        let home = PathBuf::from("/Users/demo");
+        let production = oauth_cache_root_for(None, Some(home.clone())).unwrap();
+        let first_demo_config = home
+            .join("Library/Application Support")
+            .join("buzz-demo-board-1234567812345678");
+        let second_demo_config = home
+            .join("Library/Application Support")
+            .join("buzz-demo-board-8765432187654321");
+        let first_demo = oauth_cache_root_for(Some(first_demo_config), Some(home.clone())).unwrap();
+        let second_demo = oauth_cache_root_for(Some(second_demo_config), Some(home)).unwrap();
+
+        assert_eq!(
+            production,
+            PathBuf::from("/Users/demo/.config/buzz-agent/oauth")
+        );
+        assert_eq!(
+            first_demo,
+            PathBuf::from(
+                "/Users/demo/Library/Application Support/buzz-demo-board-1234567812345678/buzz-agent/oauth"
+            )
+        );
+        assert_eq!(
+            second_demo,
+            PathBuf::from(
+                "/Users/demo/Library/Application Support/buzz-demo-board-8765432187654321/buzz-agent/oauth"
+            )
+        );
+        assert_ne!(production, first_demo);
+        assert_ne!(production, second_demo);
+        assert_ne!(first_demo, second_demo);
+    }
+
+    #[test]
+    fn cache_path_preserves_production_home_config_directory() {
         let cfg = PkceOAuthConfig {
             discovery_url: "https://example.com/.well-known".into(),
             client_id: "abc".into(),
@@ -871,8 +924,9 @@ mod tests {
             cache_dir_override: None,
         };
         let p = cache_path_for(&cfg).unwrap();
-        let expected_dir = dirs::config_dir()
+        let expected_dir = dirs::home_dir()
             .unwrap()
+            .join(".config")
             .join("buzz-agent")
             .join("oauth")
             .join("demo");

@@ -848,8 +848,15 @@ mod tests {
         let shared_sprout = home.join(".sprout");
         let shared_agent = home.join(".config").join("buzz-agent");
         let demo_config = home
-            .join(".config")
+            .join("Library")
+            .join("Application Support")
             .join("buzz-demo-current-1234567812345678");
+        let demo_oauth = demo_config.join("buzz-agent").join("oauth");
+        let other_demo_config = home
+            .join("Library")
+            .join("Application Support")
+            .join("buzz-demo-other-8765432187654321");
+        let other_demo_oauth = other_demo_config.join("buzz-agent").join("oauth");
 
         for path in [
             &app_data,
@@ -858,7 +865,8 @@ mod tests {
             &other_demo_nest,
             &shared_sprout,
             &shared_agent,
-            &demo_config,
+            &demo_oauth,
+            &other_demo_oauth,
         ] {
             std::fs::create_dir_all(path).unwrap();
         }
@@ -883,7 +891,11 @@ mod tests {
         assert!(!demo_nest.exists(), "selected demo nest must be wiped");
         assert!(
             !demo_config.exists(),
-            "selected demo agent config must be wiped"
+            "selected demo auth root must be wiped"
+        );
+        assert!(
+            other_demo_oauth.exists(),
+            "another demo's concrete auth root must survive"
         );
         assert!(prod_nest.exists(), "production nest must survive");
         assert!(other_demo_nest.exists(), "another demo nest must survive");
