@@ -42,9 +42,14 @@ use std::fmt;
 /// beyond which the snapshot can no longer authorize.
 ///
 /// The issuer binding is the anti-cross-issuer control (`FI-INV`): a snapshot
-/// authenticates only tokens whose signed `iss` equals [`Self::issuer`], so a
-/// caller cannot supply issuer B's keys to authenticate a token claiming
-/// issuer A. PR 3's JWKS runtime constructs these bound snapshots directly.
+/// authenticates only tokens whose signed `iss` equals [`Self::issuer`]. The
+/// binding is not caller-forgeable at the request seam because [`verify`]
+/// takes no snapshot argument — it resolves the snapshot from its trusted
+/// [`IssuerKeySource`] keyed by the token's authenticated `iss`. Building a
+/// snapshot (and the source that serves it) is the trusted configuration act
+/// PR 3's JWKS runtime performs at startup, not a per-request input.
+///
+/// [`verify`]: FederatedAssertionVerifier::verify
 #[derive(Clone)]
 pub struct AssertionKeySet {
     issuer: String,
@@ -91,18 +96,37 @@ impl fmt::Debug for AssertionKeySet {
     }
 }
 
-/// The provider-neutral assertion verifier over a closed multi-issuer registry.
+/// The trusted, verifier-owned mapping from an authenticated issuer to its key
+/// snapshot. This is the sole path by which key material enters verification:
+/// [`FederatedAssertionVerifier::verify`] takes no snapshot from its caller and
+/// instead asks this source for the snapshot bound to the token's
+/// signature-authenticated `iss`. A request-path caller therefore cannot
+/// relabel one issuer's JWKS as another's — the cross-issuer bypass at the old
+/// `verify(token, key_set)` seam. Configuring the source (PR 3's JWKS runtime)
+/// is a trusted startup act, not per-request input.
+pub trait IssuerKeySource {
+    /// The current key snapshot bound to this exact issuer, or `None` when the
+    /// issuer has no available snapshot. Implementations MUST return only a
+    /// snapshot whose [`AssertionKeySet::issuer`] equals `issuer`.
+    fn key_set(&self, issuer: &str) -> Option<AssertionKeySet>;
+}
+
+/// The provider-neutral assertion verifier over a closed multi-issuer registry
+/// and a trusted [`IssuerKeySource`].
 #[derive(Debug, Clone)]
-pub struct FederatedAssertionVerifier {
+pub struct FederatedAssertionVerifier<S: IssuerKeySource> {
     registry: IssuerRegistry,
+    key_source: S,
     transport_contract_id: TransportContractId,
 }
 
-impl FederatedAssertionVerifier {
-    /// Construct a verifier over a registry of issuer policies.
-    pub fn new(registry: IssuerRegistry) -> Self {
+impl<S: IssuerKeySource> FederatedAssertionVerifier<S> {
+    /// Construct a verifier over a registry of issuer policies and the trusted
+    /// key source that serves each issuer's snapshot.
+    pub fn new(registry: IssuerRegistry, key_source: S) -> Self {
         Self {
             registry,
+            key_source,
             transport_contract_id: TransportContractId::core_client_attached(),
         }
     }
@@ -114,15 +138,11 @@ impl FederatedAssertionVerifier {
 
     /// Verify one compact JWS and mint a sealed [`VerifiedAssertion`].
     ///
-    /// `key_set` is the key source for the token's issuer, selected by the
-    /// caller after [`Self::issuer_of`] or supplied as a per-issuer snapshot.
-    /// The issuer is re-selected and re-checked here against the registry and
-    /// the token's signed `iss`.
-    pub fn verify(
-        &self,
-        token: &str,
-        key_set: &AssertionKeySet,
-    ) -> Result<VerifiedAssertion, VerifierError> {
+    /// The caller supplies only the token. The key snapshot is resolved
+    /// internally from the trusted [`IssuerKeySource`] by the token's
+    /// signature-authenticated `iss`, so no caller can inject or relabel key
+    /// material for another issuer.
+    pub fn verify(&self, token: &str) -> Result<VerifiedAssertion, VerifierError> {
         if token.is_empty() || token.len() > MAX_TOKEN_BYTES {
             return Err(VerifierError::MalformedToken);
         }
@@ -137,10 +157,16 @@ impl FederatedAssertionVerifier {
             .policy_for_issuer(&signed_issuer)
             .ok_or(VerifierError::UnknownIssuer)?;
 
-        // Bind the key source to the exact signed `iss`: a snapshot may only
-        // authenticate its own issuer's tokens. Without this, a caller could
-        // supply issuer B's keys for a token claiming issuer A and, if B
-        // happens to hold a `kid`-matching key, forge a cross-issuer identity.
+        // Resolve the key snapshot internally from the trusted source, keyed by
+        // the policy's exact `iss`. The snapshot is never a caller argument, so
+        // issuer B's keys cannot be relabelled as issuer A at the request seam.
+        let key_set = self
+            .key_source
+            .key_set(policy.issuer())
+            .ok_or(VerifierError::KeySourceUnavailable)?;
+        // Defensive invariant: a correct source binds the snapshot to the exact
+        // issuer requested. A source that violates this contract cannot cross
+        // issuers.
         if key_set.issuer() != policy.issuer() {
             return Err(VerifierError::IssuerKeyMismatch);
         }
@@ -185,7 +211,7 @@ impl FederatedAssertionVerifier {
         let asserted_key = parse_nostr_pubkey_claim(policy, &claims)?;
 
         let now = Utc::now();
-        let deadlines = self.check_time_and_deadlines(policy, key_set, &claims, now)?;
+        let deadlines = self.check_time_and_deadlines(policy, &key_set, &claims, now)?;
         let capabilities = capture_capabilities(policy, &claims);
 
         Ok(VerifiedAssertion::seal(
@@ -198,13 +224,6 @@ impl FederatedAssertionVerifier {
             self.transport_contract_id,
             RevalidationDependencies::new(header.kid, key_set.generation()),
         ))
-    }
-
-    /// The exact `iss` carried by a token, read without verifying its
-    /// signature. Used only to select a policy; the signed `iss` is
-    /// re-validated by [`Self::verify`].
-    pub fn issuer_of(&self, token: &str) -> Result<String, VerifierError> {
-        self.unverified_issuer(token)
     }
 
     fn unverified_issuer(&self, token: &str) -> Result<String, VerifierError> {
@@ -276,9 +295,17 @@ pub enum VerifierError {
     #[error("unknown issuer")]
     UnknownIssuer,
     /// The supplied key snapshot authenticates a different issuer than the
-    /// token's signed `iss`. The key source is bound to its exact issuer.
+    /// token's signed `iss`. Defensive: the trusted [`IssuerKeySource`] is
+    /// contracted to return only issuer-bound snapshots, so a correct source
+    /// never triggers this.
     #[error("issuer/key mismatch")]
     IssuerKeyMismatch,
+    /// The token's issuer is registered, but the trusted key source has no
+    /// available snapshot for it (for example, a JWKS refresh has not yet
+    /// succeeded). An unreadable authoritative dependency, not rejected
+    /// evidence: the token may be perfectly valid.
+    #[error("key source unavailable")]
+    KeySourceUnavailable,
     /// The policy declares `current-status` freshness, whose runtime status
     /// witness this verifier does not yet gather. Verification defers to the
     /// status-bearing runtime rather than sealing without the witness.
@@ -325,10 +352,16 @@ pub enum VerifierError {
 }
 
 impl VerifierError {
-    /// The public denial class. Every verifier failure is evidence rejection:
-    /// malformed, invalid, or expired evidence.
+    /// The public denial class. Almost every verifier failure is evidence
+    /// rejection (malformed, invalid, or expired evidence); the sole exception
+    /// is [`Self::KeySourceUnavailable`], an unreadable authoritative
+    /// dependency that maps to [`DenialClass::AuthorizationUnavailable`] so a
+    /// missing key snapshot never masquerades as rejected evidence.
     pub const fn denial_class(self) -> DenialClass {
-        DenialClass::EvidenceRejected
+        match self {
+            Self::KeySourceUnavailable => DenialClass::AuthorizationUnavailable,
+            _ => DenialClass::EvidenceRejected,
+        }
     }
 
     /// A unique stable machine code, safe for access-controlled logs.
@@ -338,6 +371,7 @@ impl VerifierError {
             Self::DuplicateMember => "nip_fi_duplicate_member",
             Self::UnknownIssuer => "nip_fi_unknown_issuer",
             Self::IssuerKeyMismatch => "nip_fi_issuer_key_mismatch",
+            Self::KeySourceUnavailable => "nip_fi_key_source_unavailable",
             Self::StatusWitnessUnavailable => "nip_fi_status_witness_unavailable",
             Self::UnsupportedAlgorithm => "nip_fi_unsupported_algorithm",
             Self::UnsupportedCriticalHeader => "nip_fi_unsupported_critical_header",

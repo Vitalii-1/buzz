@@ -5,13 +5,14 @@
 
 use buzz_auth::{
     AssertionKeySet, ClientSubjectPosture, DenialClass, FederatedAssertionVerifier, FreshnessClass,
-    IssuerPolicy, IssuerPolicyError, IssuerRegistry, SubjectClassContract, TokenClass,
-    TransportContractId, VerifierError, CLIENT_ATTACHED_HEADER, NOSTR_PUBKEY_CLAIM,
+    IssuerKeySource, IssuerPolicy, IssuerPolicyError, IssuerRegistry, SubjectClassContract,
+    TokenClass, TransportContractId, VerifierError, CLIENT_ATTACHED_HEADER, NOSTR_PUBKEY_CLAIM,
     OAUTH_CLIENT_ID_CLAIM,
 };
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde_json::{json, Value};
+use std::collections::HashMap;
 
 // A fixed P-256 test key (PKCS#8 PEM) and its public JWK coordinates.
 const TEST_EC_PKCS8_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
@@ -25,7 +26,42 @@ const TEST_KID: &str = "test-key-1";
 const ISSUER: &str = "https://issuer.example";
 const AUDIENCE: &str = "https://relay.example";
 
+// A second, independent P-256 key: issuer B's real signing key, used to prove
+// that a token signed by B and claiming `iss=A` cannot mint an A identity.
+const TEST_EC_PKCS8_PEM_B: &str = "-----BEGIN PRIVATE KEY-----\n\
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgKcmDf3+zDWyC96/X\n\
+Gv8aYK552uF5aE6nXKzxAfl4fSWhRANCAATf0ccbp1c4mMd6WvSuliv5ZAS8iIWL\n\
+Ne2tqOfFa0hRpa41DANab1/EuDGi7PtIo8xSYwkaoib1MAJlfLvRMjQA\n\
+-----END PRIVATE KEY-----\n";
+const TEST_JWK_X_B: &str = "39HHG6dXOJjHelr0rpYr-WQEvIiFizXtrajnxWtIUaU";
+const TEST_JWK_Y_B: &str = "rjUMA1pvX8S4MaLs-0ijzFJjCRqiJvUwAmV8u9EyNAA";
+
+/// A trusted [`IssuerKeySource`] backed by a fixed issuer→snapshot map,
+/// standing in for PR 3's JWKS runtime. It only ever returns a snapshot bound
+/// to the exact issuer requested — the invariant the real source guarantees.
+struct MapKeySource(HashMap<String, AssertionKeySet>);
+
+impl MapKeySource {
+    fn new(sets: impl IntoIterator<Item = AssertionKeySet>) -> Self {
+        Self(
+            sets.into_iter()
+                .map(|s| (s.issuer().to_owned(), s))
+                .collect(),
+        )
+    }
+}
+
+impl IssuerKeySource for MapKeySource {
+    fn key_set(&self, issuer: &str) -> Option<AssertionKeySet> {
+        self.0.get(issuer).cloned()
+    }
+}
+
 fn test_jwks(kid: &str) -> JwkSet {
+    jwks_with_coords(kid, TEST_JWK_X, TEST_JWK_Y)
+}
+
+fn jwks_with_coords(kid: &str, x: &str, y: &str) -> JwkSet {
     serde_json::from_value(json!({
         "keys": [{
             "kty": "EC",
@@ -33,15 +69,11 @@ fn test_jwks(kid: &str) -> JwkSet {
             "use": "sig",
             "alg": "ES256",
             "kid": kid,
-            "x": TEST_JWK_X,
-            "y": TEST_JWK_Y,
+            "x": x,
+            "y": y,
         }]
     }))
     .expect("valid JWKS")
-}
-
-fn key_set() -> AssertionKeySet {
-    key_set_for(ISSUER)
 }
 
 fn key_set_for(issuer: &str) -> AssertionKeySet {
@@ -98,23 +130,26 @@ fn dedicated_policy(issuer: &str) -> IssuerPolicy {
     .expect("valid policy")
 }
 
-fn verifier_with(policy: IssuerPolicy) -> FederatedAssertionVerifier {
+fn verifier_with(policy: IssuerPolicy) -> FederatedAssertionVerifier<MapKeySource> {
     let mut registry = IssuerRegistry::new();
+    let issuer = policy.issuer().to_owned();
     registry.insert(policy);
-    FederatedAssertionVerifier::new(registry)
+    FederatedAssertionVerifier::new(registry, MapKeySource::new([key_set_for(&issuer)]))
 }
 
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
-fn signing_key() -> EncodingKey {
-    EncodingKey::from_ec_pem(TEST_EC_PKCS8_PEM.as_bytes()).expect("valid EC PEM")
+/// Mint a signed ES256 assertion with the given `typ`, `kid`, and claims,
+/// signed by the default (issuer A) key.
+/// Fills in default `iss`/`aud`/`iat`/`exp` if absent.
+fn mint(typ: Option<&str>, kid: &str, claims: Value) -> String {
+    mint_signed_by(TEST_EC_PKCS8_PEM, typ, kid, claims)
 }
 
-/// Mint a signed ES256 assertion with the given `typ`, `kid`, and claims.
-/// Fills in default `iss`/`aud`/`iat`/`exp` if absent.
-fn mint(typ: Option<&str>, kid: &str, mut claims: Value) -> String {
+/// Mint a signed ES256 assertion with an explicit signing key (PKCS#8 PEM).
+fn mint_signed_by(pkcs8_pem: &str, typ: Option<&str>, kid: &str, mut claims: Value) -> String {
     {
         let obj = claims.as_object_mut().expect("claims object");
         obj.entry("iss").or_insert(json!(ISSUER));
@@ -125,7 +160,8 @@ fn mint(typ: Option<&str>, kid: &str, mut claims: Value) -> String {
     let mut header = Header::new(Algorithm::ES256);
     header.kid = Some(kid.to_owned());
     header.typ = typ.map(str::to_owned);
-    jsonwebtoken::encode(&header, &claims, &signing_key()).expect("sign")
+    let key = EncodingKey::from_ec_pem(pkcs8_pem.as_bytes()).expect("valid EC PEM");
+    jsonwebtoken::encode(&header, &claims, &key).expect("sign")
 }
 
 /// A resource-owner `at+jwt` claim set: valid subject-class marker plus client_id.
@@ -145,7 +181,7 @@ fn b64_segment(json_text: &str) -> String {
 fn valid_access_token_verifies() {
     let verifier = verifier_with(access_token_policy());
     let token = mint(Some("at+jwt"), TEST_KID, resource_owner_claims());
-    let assertion = verifier.verify(&token, &key_set()).expect("verifies");
+    let assertion = verifier.verify(&token).expect("verifies");
     assert_eq!(assertion.identity().issuer(), ISSUER);
     assert_eq!(assertion.identity().subject(), "user-123");
     assert!(assertion.asserted_key().is_none());
@@ -163,7 +199,7 @@ fn id_token_denies_even_when_iss_aud_sub_match() {
         TEST_KID,
         json!({ "sub": "user-123", "client_id": "app-1", "sub_type": "user", "nonce": "n" }),
     );
-    let err = verifier.verify(&token, &key_set()).unwrap_err();
+    let err = verifier.verify(&token).unwrap_err();
     assert_eq!(err, VerifierError::TokenTypeRejected);
     assert_eq!(err.denial_class(), DenialClass::EvidenceRejected);
 }
@@ -223,7 +259,7 @@ fn named_compat_accepts_access_token_with_generic_typ() {
         TEST_KID,
         json!({ "sub": "user-123", "client_id": "app-1" }),
     );
-    assert!(verifier.verify(&token, &key_set()).is_ok());
+    assert!(verifier.verify(&token).is_ok());
 }
 
 #[test]
@@ -237,7 +273,7 @@ fn named_compat_denies_generic_oidc_id_token() {
         json!({ "sub": "user-123", "nonce": "abc", "at_hash": "xyz" }),
     );
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::ClaimContractRejected
     );
 }
@@ -247,11 +283,11 @@ fn dedicated_class_rejects_at_jwt_typ_and_accepts_nip_fi() {
     let verifier = verifier_with(dedicated_policy(ISSUER));
     let wrong = mint(Some("at+jwt"), TEST_KID, json!({ "sub": "u" }));
     assert_eq!(
-        verifier.verify(&wrong, &key_set()).unwrap_err(),
+        verifier.verify(&wrong).unwrap_err(),
         VerifierError::TokenTypeRejected
     );
     let ok = mint(Some("nip-fi+jwt"), TEST_KID, json!({ "sub": "u" }));
-    assert!(verifier.verify(&ok, &key_set()).is_ok());
+    assert!(verifier.verify(&ok).is_ok());
 }
 
 #[test]
@@ -263,7 +299,7 @@ fn access_token_without_client_id_denies() {
         json!({ "sub": "user-123", "sub_type": "user" }),
     );
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::ClaimContractRejected
     );
 }
@@ -278,7 +314,7 @@ fn resource_owner_marker_verifies() {
         TEST_KID,
         json!({ "sub": "user-123", "client_id": "app-1", "sub_type": "user" }),
     );
-    assert!(verifier.verify(&token, &key_set()).is_ok());
+    assert!(verifier.verify(&token).is_ok());
 }
 
 #[test]
@@ -290,7 +326,7 @@ fn client_subject_marker_denies_under_reject_posture() {
         json!({ "sub": "svc-1", "client_id": "app-1", "sub_type": "client" }),
     );
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::ClaimContractRejected
     );
 }
@@ -310,7 +346,7 @@ fn client_subject_marker_verifies_under_accept_non_colliding_posture() {
         TEST_KID,
         json!({ "sub": "svc-1", "client_id": "app-1", "sub_type": "client" }),
     );
-    assert!(verifier.verify(&token, &key_set()).is_ok());
+    assert!(verifier.verify(&token).is_ok());
 }
 
 #[test]
@@ -324,7 +360,7 @@ fn unclassifiable_subject_marker_denies() {
         json!({ "sub": "user-123", "client_id": "app-1", "sub_type": "mystery" }),
     );
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::ClaimContractRejected
     );
 }
@@ -355,7 +391,7 @@ fn hs256_symmetric_algorithm_denies() {
     let token = format!("{header}.{payload}.AAAA");
     let verifier = verifier_with(access_token_policy());
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::UnsupportedAlgorithm
     );
 }
@@ -369,7 +405,7 @@ fn alg_none_denies() {
     let token = format!("{header}.{payload}.");
     let verifier = verifier_with(access_token_policy());
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::UnsupportedAlgorithm
     );
 }
@@ -383,7 +419,7 @@ fn unknown_kid_denies() {
         json!({ "sub": "u", "client_id": "a" }),
     );
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::AmbiguousKeyId
     );
 }
@@ -400,7 +436,7 @@ fn tampered_signature_denies() {
     let last = token.pop().unwrap();
     token.push(if last == 'A' { 'B' } else { 'A' });
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::InvalidSignatureOrClaims
     );
 }
@@ -414,7 +450,7 @@ fn wrong_audience_denies() {
         json!({ "sub": "u", "client_id": "a", "aud": "https://other.example" }),
     );
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::InvalidSignatureOrClaims
     );
 }
@@ -430,7 +466,7 @@ fn lowercase_hex_nostr_pubkey_is_accepted() {
         TEST_KID,
         json!({ "sub": "u", "client_id": "a", "sub_type": "user", NOSTR_PUBKEY_CLAIM: real }),
     );
-    let assertion = verifier.verify(&token, &key_set()).expect("verifies");
+    let assertion = verifier.verify(&token).expect("verifies");
     assert!(assertion.asserted_key().is_some());
 }
 
@@ -444,7 +480,7 @@ fn uppercase_nostr_pubkey_denies() {
         json!({ "sub": "u", "client_id": "a", "sub_type": "user", NOSTR_PUBKEY_CLAIM: upper }),
     );
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::ClaimRejected
     );
 }
@@ -467,7 +503,7 @@ fn missing_nostr_pubkey_denies_under_attested_key_policy() {
     let verifier = verifier_with(policy);
     let token = mint(Some("nip-fi+jwt"), TEST_KID, json!({ "sub": "u" }));
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::ClaimRejected
     );
 }
@@ -482,10 +518,7 @@ fn expired_assertion_denies() {
         TEST_KID,
         json!({ "sub": "u", "client_id": "a", "sub_type": "user", "iat": now() - 1200, "exp": now() - 600 }),
     );
-    assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
-        VerifierError::Expired
-    );
+    assert_eq!(verifier.verify(&token).unwrap_err(), VerifierError::Expired);
 }
 
 #[test]
@@ -496,10 +529,7 @@ fn assertion_beyond_maximum_age_denies() {
         TEST_KID,
         json!({ "sub": "u", "client_id": "a", "sub_type": "user", "iat": now() - 4000, "exp": now() + 600 }),
     );
-    assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
-        VerifierError::Expired
-    );
+    assert_eq!(verifier.verify(&token).unwrap_err(), VerifierError::Expired);
 }
 
 // ---- Multi-issuer selection ----------------------------------------------
@@ -513,7 +543,7 @@ fn unknown_issuer_denies() {
         json!({ "sub": "u", "client_id": "a", "iss": "https://evil.example" }),
     );
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::UnknownIssuer
     );
 }
@@ -529,50 +559,135 @@ fn same_subject_distinct_issuers_are_distinct_identities() {
     let mut registry = IssuerRegistry::new();
     registry.insert(policy_a);
     registry.insert(policy_b);
-    let verifier = FederatedAssertionVerifier::new(registry);
+    // Both issuers share the same test signing key here; the source binds a
+    // snapshot to each issuer and the verifier selects by authenticated `iss`.
+    let verifier = FederatedAssertionVerifier::new(
+        registry,
+        MapKeySource::new([key_set_for(issuer_a), key_set_for(issuer_b)]),
+    );
 
     let sign = |iss: &str| {
         let claims = json!({ "sub": "shared-sub", "iss": iss });
         mint(Some("nip-fi+jwt"), TEST_KID, claims)
     };
-    let a = verifier
-        .verify(&sign(issuer_a), &key_set_for(issuer_a))
-        .expect("a verifies");
-    let b = verifier
-        .verify(&sign(issuer_b), &key_set_for(issuer_b))
-        .expect("b verifies");
+    let a = verifier.verify(&sign(issuer_a)).expect("a verifies");
+    let b = verifier.verify(&sign(issuer_b)).expect("b verifies");
     assert_eq!(a.identity().subject(), b.identity().subject());
     assert_ne!(a.identity().issuer(), b.identity().issuer());
     assert_ne!(a.assertion_policy_id(), b.assertion_policy_id());
 }
 
-// ---- Cross-issuer key binding (CRITICAL #1) ------------------------------
+// ---- Cross-issuer key-source confusion (CRITICAL #1) ---------------------
 
 #[test]
-fn key_snapshot_bound_to_its_issuer_blocks_cross_issuer_use() {
-    // Two issuers whose policies share every field except `iss`, so only the
-    // key binding — not policy shape — can stop the cross-issuer forgery. The
-    // same test key backs both snapshots, so the signature would otherwise
-    // verify.
+fn cross_issuer_token_cannot_mint_through_the_only_public_seam() {
+    // The structural regression for the key-source-confusion bypass: issuer B
+    // signs a token with its own real key while the signed claim says `iss=A`.
+    // Because `verify` takes only the token and resolves the snapshot from the
+    // trusted source keyed by the authenticated `iss`, issuer B's keys can
+    // never authenticate a token claiming issuer A — there is no seam through
+    // which a caller can supply or relabel key material.
     let issuer_a = "https://a.example";
     let issuer_b = "https://b.example";
+
+    // Each issuer's source snapshot carries only its own real public key.
+    let key_a = AssertionKeySet::new(issuer_a.to_owned(), 1, test_jwks(TEST_KID), None).unwrap();
+    let key_b = AssertionKeySet::new(
+        issuer_b.to_owned(),
+        1,
+        jwks_with_coords(TEST_KID, TEST_JWK_X_B, TEST_JWK_Y_B),
+        None,
+    )
+    .unwrap();
+
     let mut registry = IssuerRegistry::new();
     registry.insert(dedicated_policy(issuer_a));
     registry.insert(dedicated_policy(issuer_b));
-    let verifier = FederatedAssertionVerifier::new(registry);
+    let verifier = FederatedAssertionVerifier::new(registry, MapKeySource::new([key_a, key_b]));
 
-    // Token claims issuer A; caller mistakenly supplies issuer B's snapshot.
-    let token = mint(
+    // Token signed by B's key, claiming `iss=A`. The verifier selects issuer
+    // A's policy and issuer A's snapshot; B's signature fails against A's key.
+    let forged = mint_signed_by(
+        TEST_EC_PKCS8_PEM_B,
         Some("nip-fi+jwt"),
         TEST_KID,
-        json!({ "sub": "u", "iss": issuer_a }),
+        json!({ "iss": issuer_a, "sub": "victim" }),
     );
     assert_eq!(
-        verifier.verify(&token, &key_set_for(issuer_b)).unwrap_err(),
+        verifier.verify(&forged).unwrap_err(),
+        VerifierError::InvalidSignatureOrClaims,
+        "B-signed token claiming iss=A must not mint an A identity"
+    );
+
+    // Sanity: each issuer's own honestly-signed token verifies under its bound
+    // snapshot, so the deny above is the forgery, not a broken key source.
+    let honest_a = mint_signed_by(
+        TEST_EC_PKCS8_PEM,
+        Some("nip-fi+jwt"),
+        TEST_KID,
+        json!({ "iss": issuer_a, "sub": "u" }),
+    );
+    let honest_b = mint_signed_by(
+        TEST_EC_PKCS8_PEM_B,
+        Some("nip-fi+jwt"),
+        TEST_KID,
+        json!({ "iss": issuer_b, "sub": "u" }),
+    );
+    assert_eq!(
+        verifier.verify(&honest_a).unwrap().identity().issuer(),
+        issuer_a
+    );
+    assert_eq!(
+        verifier.verify(&honest_b).unwrap().identity().issuer(),
+        issuer_b
+    );
+}
+
+#[test]
+fn registered_issuer_without_key_snapshot_is_unavailable_not_rejected() {
+    // A registered issuer whose trusted source has no snapshot is an
+    // unreadable authoritative dependency, not rejected evidence: the token
+    // may be valid. It maps to AuthorizationUnavailable (503), never
+    // EvidenceRejected, so a JWKS gap can't masquerade as a bad token.
+    let registry = {
+        let mut r = IssuerRegistry::new();
+        r.insert(dedicated_policy(ISSUER));
+        r
+    };
+    // Empty key source: the issuer is registered but has no snapshot.
+    let verifier = FederatedAssertionVerifier::new(registry, MapKeySource::new([]));
+    let token = mint(Some("nip-fi+jwt"), TEST_KID, json!({ "sub": "u" }));
+    let err = verifier.verify(&token).unwrap_err();
+    assert_eq!(err, VerifierError::KeySourceUnavailable);
+    assert_eq!(err.denial_class(), DenialClass::AuthorizationUnavailable);
+}
+
+#[test]
+fn misbinding_key_source_is_rejected_by_defensive_check() {
+    // Defense-in-depth: a buggy/hostile IssuerKeySource that returns a snapshot
+    // labelled for a different issuer than requested must not authenticate. The
+    // verifier re-checks the returned snapshot's issuer against the selected
+    // policy and denies on mismatch, so a source contract violation cannot
+    // cross issuers even though the honest source never triggers this.
+    struct MisbindingSource(AssertionKeySet);
+    impl IssuerKeySource for MisbindingSource {
+        fn key_set(&self, _issuer: &str) -> Option<AssertionKeySet> {
+            // Always returns a snapshot bound to the WRONG issuer.
+            Some(self.0.clone())
+        }
+    }
+
+    let mut registry = IssuerRegistry::new();
+    registry.insert(dedicated_policy(ISSUER));
+    let verifier = FederatedAssertionVerifier::new(
+        registry,
+        MisbindingSource(key_set_for("https://other.example")),
+    );
+    let token = mint(Some("nip-fi+jwt"), TEST_KID, json!({ "sub": "u" }));
+    assert_eq!(
+        verifier.verify(&token).unwrap_err(),
         VerifierError::IssuerKeyMismatch
     );
-    // The correctly bound snapshot verifies.
-    assert!(verifier.verify(&token, &key_set_for(issuer_a)).is_ok());
 }
 
 // ---- Duplicate-member rejection (IMPORTANT #2) ---------------------------
@@ -593,7 +708,7 @@ fn duplicate_claim_member_denies() {
     let header = r#"{"alg":"ES256","kid":"test-key-1","typ":"at+jwt"}"#;
     let token = format!("{}.{}.AAAA", b64_segment(header), b64_segment(&claims));
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::DuplicateMember
     );
 }
@@ -610,7 +725,7 @@ fn duplicate_header_member_denies() {
     );
     let token = format!("{}.{}.AAAA", b64_segment(header), b64_segment(&claims));
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::DuplicateMember
     );
 }
@@ -635,7 +750,7 @@ fn current_status_policy_denies_without_witness() {
     let verifier = verifier_with(policy);
     let token = mint(Some("nip-fi+jwt"), TEST_KID, json!({ "sub": "u" }));
     assert_eq!(
-        verifier.verify(&token, &key_set()).unwrap_err(),
+        verifier.verify(&token).unwrap_err(),
         VerifierError::StatusWitnessUnavailable
     );
 }
@@ -650,7 +765,7 @@ fn subject_bytes_are_preserved_exactly_not_trimmed() {
         TEST_KID,
         json!({ "sub": " user-123 ", "client_id": "app-1", "sub_type": "user" }),
     );
-    let assertion = verifier.verify(&token, &key_set()).expect("verifies");
+    let assertion = verifier.verify(&token).expect("verifies");
     assert_eq!(assertion.identity().subject(), " user-123 ");
 }
 

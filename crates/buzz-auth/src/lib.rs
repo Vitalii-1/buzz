@@ -47,10 +47,10 @@ pub use scope::{parse_scopes, Scope};
 
 pub use nip_fi::{
     AssertionKeySet, AssertionPolicyId, CanonicalCapabilities, ClientSubjectPosture, DenialClass,
-    FederatedAssertionVerifier, FederatedIdentity, FreshnessClass, IssuerPolicy, IssuerPolicyError,
-    IssuerRegistry, RevalidationDependencies, SubjectClass, SubjectClassContract, TokenClass,
-    TransportContractId, VerifiedAssertion, VerifierError, CLIENT_ATTACHED_HEADER,
-    NOSTR_PUBKEY_CLAIM, OAUTH_CLIENT_ID_CLAIM,
+    FederatedAssertionVerifier, FederatedIdentity, FreshnessClass, IssuerKeySource, IssuerPolicy,
+    IssuerPolicyError, IssuerRegistry, RevalidationDependencies, SubjectClass,
+    SubjectClassContract, TokenClass, TransportContractId, VerifiedAssertion, VerifierError,
+    CLIENT_ATTACHED_HEADER, NOSTR_PUBKEY_CLAIM, OAUTH_CLIENT_ID_CLAIM,
 };
 
 #[cfg(any(test, feature = "test-utils"))]

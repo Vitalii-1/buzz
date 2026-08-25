@@ -36,4 +36,4 @@ pub use config::{
     NOSTR_PUBKEY_CLAIM, OAUTH_CLIENT_ID_CLAIM,
 };
 pub use denial::DenialClass;
-pub use verifier::{AssertionKeySet, FederatedAssertionVerifier, VerifierError};
+pub use verifier::{AssertionKeySet, FederatedAssertionVerifier, IssuerKeySource, VerifierError};
