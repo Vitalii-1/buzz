@@ -2624,9 +2624,7 @@ mod postgres_tests {
     /// replay of the same event id in the same community is rejected. The same
     /// id in a different community still succeeds, proving the key is scoped by
     /// server-resolved tenant rather than global process memory.
-    #[tokio::test]
-    #[ignore = "requires Redis"]
-    async fn external_infra_nip98_replay_guard_rejects_cross_pod_replay_on_bridge_path() {
+    async fn nip98_replay_guard_rejects_cross_pod_replay_on_bridge_path() {
         let pool = redis_pool();
         let pod_a = buzz_pubsub::RedisNip98ReplayGuard::new(pool.clone());
         let pod_b = buzz_pubsub::RedisNip98ReplayGuard::new(pool);
@@ -2653,9 +2651,7 @@ mod postgres_tests {
     /// rejection. A single guard instance, called twice with the same
     /// `TenantContext` and the same event id, MUST reject the second call.
     /// Bites if `try_mark`'s admit/reject mapping is reversed or no-op'd.
-    #[tokio::test]
-    #[ignore = "requires Redis"]
-    async fn external_infra_nip98_replay_guard_rejects_same_pod_same_community_replay() {
+    async fn nip98_replay_guard_rejects_same_pod_same_community_replay() {
         let pool = redis_pool();
         let pod = buzz_pubsub::RedisNip98ReplayGuard::new(pool);
         let tenant = fresh_tenant("relay-a.example");
@@ -2669,6 +2665,20 @@ mod postgres_tests {
             .await
             .expect_err("same-pod replay of the same id+community must reject");
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    mod external_infra_redis_tests {
+        #[tokio::test]
+        #[ignore = "requires Redis"]
+        async fn nip98_replay_guard_rejects_cross_pod_replay_on_bridge_path() {
+            super::nip98_replay_guard_rejects_cross_pod_replay_on_bridge_path().await;
+        }
+
+        #[tokio::test]
+        #[ignore = "requires Redis"]
+        async fn nip98_replay_guard_rejects_same_pod_same_community_replay() {
+            super::nip98_replay_guard_rejects_same_pod_same_community_replay().await;
+        }
     }
 
     /// Attack 3 fail-closed guard: a stateless worker that loses Redis MUST

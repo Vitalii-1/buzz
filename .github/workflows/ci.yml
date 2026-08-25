@@ -46,6 +46,8 @@ jobs:
               - 'rust-toolchain.toml'
               - '.config/nextest.toml'
               - 'scripts/postgres-test-*.sh'
+              - 'scripts/check-postgres-test-discovery.py'
+              - 'scripts/test-postgres-test-discovery.sh'
               - 'deny.toml'
               - '.github/workflows/ci.yml'
               - 'scripts/run-tests.sh'
@@ -463,6 +465,8 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      - name: Validate PostgreSQL test discovery
+        run: scripts/test-postgres-test-discovery.sh
       - name: Install cargo-nextest
         uses: taiki-e/install-action@0fd46367812ee04360509b4169d9f659d6892bb2 # v2.79.15
         with:

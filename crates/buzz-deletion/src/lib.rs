@@ -1879,9 +1879,7 @@ mod postgres_tests {
     /// then the worker died before the chunk stamp. Resume must re-delete the
     /// chunk (missing keys report as deleted — idempotent), stamp it, and
     /// finish the stage.
-    #[tokio::test]
-    #[ignore = "requires Postgres and S3-compatible storage"]
-    async fn external_infra_drained_stage_resumes_chunk_deleted_before_stamp() {
+    async fn drained_stage_resumes_chunk_deleted_before_stamp() {
         let (_, mut services, claim) = claimed_test_deletion("deletion-chunk-resume").await;
         services.media = deletion_test_media_storage();
         let community = claim.request.community_id;
@@ -2135,9 +2133,7 @@ mod postgres_tests {
         assert!(scan_proves_absence(&[(9, Vec::new()), (0, Vec::new())]));
     }
 
-    #[tokio::test]
-    #[ignore = "requires Postgres and S3-compatible storage"]
-    async fn external_infra_final_storage_verification_rejects_late_target_binding() {
+    async fn final_storage_verification_rejects_late_target_binding() {
         let (_, mut services, claim) = claimed_test_deletion("deletion-late-binding").await;
         services.media = deletion_test_media_storage();
         let community = claim.request.community_id;
@@ -2159,6 +2155,20 @@ mod postgres_tests {
         verify_storage_absence(&services, &claim.request)
             .await
             .expect("empty tenant prefixes verify clean");
+    }
+
+    mod external_infra_s3_tests {
+        #[tokio::test]
+        #[ignore = "requires Postgres and S3-compatible storage"]
+        async fn drained_stage_resumes_chunk_deleted_before_stamp() {
+            super::drained_stage_resumes_chunk_deleted_before_stamp().await;
+        }
+
+        #[tokio::test]
+        #[ignore = "requires Postgres and S3-compatible storage"]
+        async fn final_storage_verification_rejects_late_target_binding() {
+            super::final_storage_verification_rejects_late_target_binding().await;
+        }
     }
 
     #[tokio::test]

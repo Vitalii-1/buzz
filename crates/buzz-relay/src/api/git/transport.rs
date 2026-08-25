@@ -2424,8 +2424,6 @@ mod track_c_tests {
         }
     }
 
-    #[tokio::test]
-    #[ignore = "requires Postgres and MinIO"]
     async fn repo_announcement_holds_serving_lease_until_pointer_is_seeded() {
         let (state, pool) = finalize_test_state().await;
         let host = format!(
@@ -2522,9 +2520,7 @@ mod track_c_tests {
         pool.close().await;
     }
 
-    #[tokio::test]
-    #[ignore = "requires Postgres and MinIO"]
-    async fn external_infra_finalize_push_holds_serving_lease_through_post_cas_publication() {
+    async fn finalize_push_holds_serving_lease_through_post_cas_publication() {
         let (state, pool) = finalize_test_state().await;
         let host = format!("git-finalize-{}.example", uuid::Uuid::new_v4().simple());
         let community = state
@@ -2615,9 +2611,7 @@ mod track_c_tests {
         pool.close().await;
     }
 
-    #[tokio::test]
-    #[ignore = "requires Postgres and MinIO"]
-    async fn external_infra_finalize_push_db_failure_after_cas_is_not_success_and_releases_lease() {
+    async fn finalize_push_db_failure_after_cas_is_not_success_and_releases_lease() {
         let (state, pool) = finalize_test_state().await;
         let host = format!(
             "git-finalize-fail-{}.example",
@@ -2655,6 +2649,26 @@ mod track_c_tests {
             .expect("serving lease released on failure"));
         drop(state);
         pool.close().await;
+    }
+
+    mod external_infra_minio_tests {
+        #[tokio::test]
+        #[ignore = "requires Postgres and MinIO"]
+        async fn repo_announcement_holds_serving_lease_until_pointer_is_seeded() {
+            super::repo_announcement_holds_serving_lease_until_pointer_is_seeded().await;
+        }
+
+        #[tokio::test]
+        #[ignore = "requires Postgres and MinIO"]
+        async fn finalize_push_holds_serving_lease_through_post_cas_publication() {
+            super::finalize_push_holds_serving_lease_through_post_cas_publication().await;
+        }
+
+        #[tokio::test]
+        #[ignore = "requires Postgres and MinIO"]
+        async fn finalize_push_db_failure_after_cas_is_not_success_and_releases_lease() {
+            super::finalize_push_db_failure_after_cas_is_not_success_and_releases_lease().await;
+        }
     }
 
     /// A gzip-encoded request body is transparently inflated before it

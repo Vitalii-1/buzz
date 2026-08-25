@@ -11,12 +11,12 @@ command = { command-line = "scripts/postgres-test-wrapper.sh", relative-to = "wo
 [profile.postgres-ci]
 default-filter = """
 (test(/postgres_tests::/) or binary(/^postgres_/))
-and not test(/external_infra_/)
+and not test(/(^|::)external_infra[^:]*::/)
 """
 fail-fast = false
 test-threads = 8
 
 [[profile.postgres-ci.scripts]]
-filter = "(test(/postgres_tests::/) or binary(/^postgres_/)) and not test(/external_infra_/)"
+filter = "(test(/postgres_tests::/) or binary(/^postgres_/)) and not test(/(^|::)external_infra[^:]*::/)"
 setup = "postgres-template"
 run-wrapper = "postgres-isolation"

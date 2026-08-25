@@ -217,12 +217,17 @@ already running.
 
 ### PostgreSQL-backed tests
 
-PostgreSQL-only tests run in a dedicated nextest lane. To make a test
-discoverable, mark it ignored with a PostgreSQL reason and place it in a module
-named `postgres_tests`. Standalone integration-test targets use a `postgres_`
+PostgreSQL-backed tests run in a dedicated nextest lane. Mark them ignored with
+a PostgreSQL reason and place them in a module whose name ends in
+`postgres_tests`. Standalone integration-test targets use a `postgres_`
 filename prefix instead. Tests that also require infrastructure beyond
-PostgreSQL and Redis use an `external_infra_` test-name prefix and are excluded
-from this lane.
+PostgreSQL and Redis live under an `external_infra*_tests` module and are
+excluded without changing their descriptive function names.
+
+`scripts/test-postgres-test-discovery.sh` enforces the convention across every
+Rust source file. It fails CI when an ignored PostgreSQL test would be omitted,
+or when a Redis-only or hybrid test is accidentally included, so module or file
+renames cannot silently change lane membership.
 
 The `postgres-ci` nextest profile creates one database per test process, so
 destructive and concurrent tests must use the database URL supplied through
