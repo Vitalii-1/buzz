@@ -659,7 +659,7 @@ mod tests {
     fn the_admin_csp_never_allows_inline_or_eval() {
         assert!(
             !ADMIN_CSP.contains("unsafe-inline") && !ADMIN_CSP.contains("unsafe-eval"),
-            "the dashboard holds a bearer token — inline script or style must stay blocked"
+            "the dashboard performs signed admin requests — inline script or style must stay blocked"
         );
     }
 
