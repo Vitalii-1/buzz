@@ -4462,6 +4462,14 @@ mod agent_draft_prompt_tests {
     }
 
     #[test]
+    fn shared_base_prompt_names_current_context_framing() {
+        let prompt = include_str!("base_prompt.md");
+        assert!(prompt.contains("UUID from `<context>`"));
+        assert!(prompt.contains("reply destination supplied in the `<context>` block"));
+        assert!(!prompt.contains("`[Context]`"));
+    }
+
+    #[test]
     fn shared_base_prompt_teaches_real_newlines_for_multiline_messages() {
         let prompt = include_str!("base_prompt.md");
         assert!(prompt.contains("pass real newline bytes through stdin"));

@@ -197,6 +197,34 @@ test("parsePromptText splits paired top-level turn sections and preserves inner 
   ]);
 });
 
+test("parsePromptText preserves batched steer and interrupt counts in section titles", () => {
+  const cases = [
+    {
+      tag: "new-message-arrived-while-you-were-working",
+      count: "2",
+      title: "New messages — arrived while you were working — 2 events",
+    },
+    {
+      tag: "new-request-supersedes-previous",
+      count: "3",
+      title: "New request — supersedes previous — 3 events",
+    },
+  ];
+
+  for (const { tag, count, title } of cases) {
+    const text = [
+      `<${tag} count="${count}">`,
+      "--- Event 1 (message) ---",
+      "Content: update",
+      `</${tag}>`,
+    ].join("\n");
+
+    const parsed = parsePromptText(text);
+
+    assert.equal(parsed.sections[0]?.title, title);
+  }
+});
+
 test("parsePromptText falls back to the complete prompt for ambiguous turn tags", () => {
   const text = [
     "<context>",

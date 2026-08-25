@@ -439,11 +439,15 @@ function semanticTurnTitle(
     case "what-you-were-working-on":
       return "What you were working on";
     case "new-message-arrived-while-you-were-working":
-      return "New message — arrived while you were working";
+      return attributes.count
+        ? `New messages — arrived while you were working — ${attributes.count} events`
+        : "New message — arrived while you were working";
     case "previous-request-interrupted-before-completion":
       return "Previous request — interrupted before completion";
     case "new-request-supersedes-previous":
-      return "New request — supersedes previous";
+      return attributes.count
+        ? `New request — supersedes previous — ${attributes.count} events`
+        : "New request — supersedes previous";
     default:
       return tag;
   }
