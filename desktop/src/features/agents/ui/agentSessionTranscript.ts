@@ -19,12 +19,12 @@ import {
   extractBlockText,
   extractContentText,
   extractPlanText,
-  extractPromptText,
+  extractPromptBlocks,
   extractTriggeringEventIds,
   extractToolArgs,
   extractToolIdentity,
   extractToolResult,
-  parsePromptText,
+  parsePromptBlocks,
   parseSystemPromptSections,
 } from "./agentSessionTranscriptHelpers";
 import { friendlyTurnErrorCopy } from "../lib/friendlyAgentLastError";
@@ -839,9 +839,9 @@ export function processTranscriptEvent(
         }
       }
     } else if (event.kind === "acp_write" && method === "session/prompt") {
-      const promptText = extractPromptText(payload);
-      if (promptText) {
-        const parsedPrompt = parsePromptText(promptText);
+      const promptBlocks = extractPromptBlocks(payload);
+      if (promptBlocks.length > 0) {
+        const parsedPrompt = parsePromptBlocks(promptBlocks);
         if (parsedPrompt.userText) {
           upsertMessage(
             d,
@@ -898,9 +898,9 @@ export function processTranscriptEvent(
       event.kind === "acp_write" &&
       method === "_goose/unstable/session/steer"
     ) {
-      const promptText = extractPromptText(payload);
-      if (promptText) {
-        const parsedPrompt = parsePromptText(promptText);
+      const promptBlocks = extractPromptBlocks(payload);
+      if (promptBlocks.length > 0) {
+        const parsedPrompt = parsePromptBlocks(promptBlocks);
         if (parsedPrompt.userText) {
           upsertMessage(
             d,

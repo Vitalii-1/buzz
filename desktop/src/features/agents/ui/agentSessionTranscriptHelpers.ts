@@ -6,11 +6,46 @@ import {
 } from "./agentSessionToolCatalog";
 import { asRecord, asString, titleCase } from "./agentSessionUtils";
 
-export function extractPromptText(payload: Record<string, unknown>): string {
+export function extractPromptBlocks(
+  payload: Record<string, unknown>,
+): string[] {
   const params = asRecord(payload.params);
   const prompt = params.prompt;
-  if (!Array.isArray(prompt)) return "";
-  return prompt.map(extractBlockText).filter(Boolean).join("\n");
+  if (!Array.isArray(prompt)) return [];
+  return prompt.map(extractBlockText).filter(Boolean);
+}
+
+export function extractPromptText(payload: Record<string, unknown>): string {
+  return extractPromptBlocks(payload).join("\n");
+}
+
+const SEMANTIC_PROMPT_SECTION_START =
+  /^\s*<(?:workspace|base|system|team-instructions|core-memory|huddle-instructions|channel-canvas|context|thread-context|conversation-context|buzz-event|buzz-events|what-you-were-working-on|new-message-arrived-while-you-were-working|previous-request-interrupted-before-completion|new-request-supersedes-previous)(?:\s[^>]*)?>/;
+
+/**
+ * Parse ACP prompt blocks without losing the connector-facing slash-command
+ * boundary. The harness emits that command as block zero and semantic prompt
+ * sections in subsequent blocks; arbitrary leading text remains on the normal
+ * parsing path.
+ */
+export function parsePromptBlocks(
+  blocks: readonly string[],
+): ReturnType<typeof parsePromptText> {
+  const [firstBlock, ...remainingBlocks] = blocks;
+  const hasSlashCommandPreamble =
+    /^\/[A-Za-z0-9]/.test(firstBlock?.trimStart() ?? "") &&
+    remainingBlocks.length > 0 &&
+    SEMANTIC_PROMPT_SECTION_START.test(remainingBlocks[0]);
+
+  if (!hasSlashCommandPreamble) {
+    return parsePromptText(blocks.join("\n"));
+  }
+
+  const parsed = parsePromptText(remainingBlocks.join("\n"));
+  return {
+    ...parsed,
+    sections: [{ title: "Prompt", body: firstBlock }, ...parsed.sections],
+  };
 }
 
 export function parsePromptText(text: string): {
