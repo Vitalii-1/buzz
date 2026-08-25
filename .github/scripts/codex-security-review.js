@@ -134,7 +134,8 @@ async function getPullRequest({ github, context, prNumber }) {
   if (
     pullRequest.state !== "open" ||
     pullRequest.base.repo.full_name !==
-      `${context.repo.owner}/${context.repo.repo}`
+      `${context.repo.owner}/${context.repo.repo}` ||
+    pullRequest.base.ref !== "main"
   ) {
     return null;
   }
@@ -149,7 +150,7 @@ async function invalidate({ github, context, core }) {
 
   const pullRequest = await getPullRequest({ github, context, prNumber });
   if (!pullRequest) {
-    core.notice(`Skipping review invalidation for closed PR #${prNumber}.`);
+    core.notice(`Skipping review invalidation for ineligible PR #${prNumber}.`);
     return;
   }
 

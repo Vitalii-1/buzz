@@ -2,6 +2,7 @@ name: Codex Security Review
 
 on: # zizmor: ignore[dangerous-triggers] untrusted PR code is inspected only in an isolated read-only job
   pull_request_target:
+    branches: [main]
     types: [opened, reopened, ready_for_review, synchronize]
   issue_comment:
     types: [created]
@@ -15,15 +16,17 @@ jobs:
     # organization. Outside contributors require this exact command from one
     # of those members: @buzz-security-review
     if: >-
-      (
-        github.event_name == 'pull_request_target' &&
-        github.event.pull_request.draft == false &&
-        contains(fromJSON('["MEMBER", "OWNER"]'), github.event.pull_request.author_association)
-      ) || (
-        github.event_name == 'issue_comment' &&
-        github.event.issue.pull_request &&
-        github.event.comment.body == '@buzz-security-review' &&
-        contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association)
+      github.repository == 'block/buzz' && (
+        (
+          github.event_name == 'pull_request_target' &&
+          github.event.pull_request.draft == false &&
+          contains(fromJSON('["MEMBER", "OWNER"]'), github.event.pull_request.author_association)
+        ) || (
+          github.event_name == 'issue_comment' &&
+          github.event.issue.pull_request &&
+          github.event.comment.body == '@buzz-security-review' &&
+          contains(fromJSON('["MEMBER", "OWNER"]'), github.event.comment.author_association)
+        )
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -59,6 +62,10 @@ jobs:
               core.setFailed(`Pull request #${prNumber} targets an unexpected repository.`);
               return;
             }
+            if (pullRequest.base.ref !== 'main') {
+              core.setFailed(`Pull request #${prNumber} does not target main.`);
+              return;
+            }
             if (!pullRequest.head.repo?.full_name) {
               core.setFailed(`Pull request #${prNumber} has no available head repository.`);
               return;
@@ -75,6 +82,7 @@ jobs:
   invalidate-external-review:
     name: Mark External Review Stale
     if: >-
+      github.repository == 'block/buzz' &&
       github.event_name == 'pull_request_target' &&
       !contains(fromJSON('["MEMBER", "OWNER"]'), github.event.pull_request.author_association)
     runs-on: ubuntu-latest
