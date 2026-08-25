@@ -46,6 +46,10 @@ export function useAppNavigation() {
           kind: "route",
           href: nextLocation.href,
         },
+        // Leaving the channel surface must drop any active switch trace —
+        // including one whose channel screen never mounted (route still
+        // resolving), which no component cleanup can cover.
+        leavesChannelSurface: !next.to.startsWith("/channels/"),
         navigate: () =>
           navigate({
             ...next,
