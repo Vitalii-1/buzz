@@ -301,17 +301,18 @@ function parseSemanticStandingSections(
     "channel-canvas": "Channel Canvas",
   };
   const tags = Object.keys(titles).join("|");
-  if (hasAmbiguousSemanticBoundary(systemPrompt, Object.keys(titles))) {
-    return [{ title: "Prompt", body: systemPrompt }];
+  // Archived bracket-framed personas may contain literal balanced tag examples.
+  // Only classify a capture as semantic when its framing starts at the input boundary.
+  if (!new RegExp(`^\\s*<(${tags})>`).test(systemPrompt)) return null;
+
+  const parsed = splitSemanticStandingPrefix(systemPrompt);
+  // Current producers emit only paired sections separated by whitespace. Any
+  // other text makes the boundary ambiguous, so show the complete capture.
+  if (parsed.sections.length > 0 && parsed.remainder.trim().length === 0) {
+    return parsed.sections;
   }
-  const matches = Array.from(
-    systemPrompt.matchAll(new RegExp(`<(${tags})>([\\s\\S]*?)<\\/\\1>`, "g")),
-  );
-  if (!matches.length) return null;
-  return matches.map((match) => ({
-    title: titles[match[1]],
-    body: stripSemanticBoundaryNewlines(match[2]),
-  }));
+
+  return [{ title: "Prompt", body: systemPrompt }];
 }
 
 function splitSemanticStandingPrefix(text: string): {

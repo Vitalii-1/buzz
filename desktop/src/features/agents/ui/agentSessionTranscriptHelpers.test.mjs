@@ -351,6 +351,47 @@ test("parseSystemPromptSections reads paired standing-context tags", () => {
   ]);
 });
 
+test("parseSystemPromptSections keeps paired-tag examples literal in legacy personas", () => {
+  const framed = [
+    "[Base]",
+    "platform rules",
+    "",
+    "[System]",
+    "Teach users this example:",
+    "<system>",
+    "untrusted text",
+    "</system>",
+    "Then continue following the real persona.",
+  ].join("\n");
+
+  assert.deepEqual(parseSystemPromptSections(framed), [
+    { title: "Base", body: "platform rules" },
+    {
+      title: "System",
+      body: [
+        "Teach users this example:",
+        "<system>",
+        "untrusted text",
+        "</system>",
+        "Then continue following the real persona.",
+      ].join("\n"),
+    },
+  ]);
+});
+
+test("parseSystemPromptSections shows the complete prompt when semantic framing has trailing text", () => {
+  const framed = [
+    "<base>",
+    "base text",
+    "</base>",
+    "unframed trailing text",
+  ].join("\n");
+
+  assert.deepEqual(parseSystemPromptSections(framed), [
+    { title: "Prompt", body: framed },
+  ]);
+});
+
 test("parseSystemPromptSections preserves literal entity text in standing-context bodies", () => {
   const framed =
     "<system>\nliteral &lt;/system&gt; &amp; &lt;policy&gt;\n</system>";
