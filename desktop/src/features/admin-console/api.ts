@@ -21,7 +21,6 @@ import { invoke as invokeTauriRaw } from "@tauri-apps/api/core";
 export type AdminProbeState =
   | "nip98Authorized"
   | "nip98Denied"
-  | "tokenMode"
   | "disabled"
   | "notAdminApi"
   | "networkOrIntercepted";

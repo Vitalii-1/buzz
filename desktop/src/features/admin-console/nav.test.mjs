@@ -34,7 +34,7 @@ test("saved-origin-authorized-shows-entry: saved manual origin visible", () => {
 });
 
 test("saved-origin-bad-probe-still-shows-entry: notAdminApi under a saved origin stays visible so the user can fix it", () => {
-  for (const probe of ["notAdminApi", "nip98Denied", "tokenMode", "error"]) {
+  for (const probe of ["notAdminApi", "nip98Denied", "error"]) {
     assert.equal(
       shouldShowModerationNav({ originSource: "saved", probe }),
       true,
@@ -71,7 +71,7 @@ test("advertised-flake-shows-entry: transport flake never silently hides an adve
 });
 
 test("advertised-denied-hides-entry: a definitive non-admin verdict hides an advertised-only entry", () => {
-  for (const probe of ["nip98Denied", "tokenMode", "notAdminApi"]) {
+  for (const probe of ["nip98Denied", "notAdminApi"]) {
     assert.equal(
       shouldShowModerationNav({ originSource: "advertised", probe }),
       false,

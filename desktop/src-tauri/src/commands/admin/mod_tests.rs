@@ -828,7 +828,7 @@ async fn probe_inner_authenticated_302_is_network_or_intercepted() {
 }
 
 #[tokio::test]
-async fn probe_inner_bearer_401_is_token_mode() {
+async fn probe_inner_bearer_401_is_not_admin_api() {
     let addr = serve_sequence(vec![(
         "401 Unauthorized",
         "WWW-Authenticate: Bearer realm=\"admin\"\r\n",
@@ -841,7 +841,9 @@ async fn probe_inner_bearer_401_is_token_mode() {
     )
     .await
     .unwrap();
-    assert!(matches!(result, AdminProbeResult::TokenMode));
+    // Bearer is no longer a recognized Buzz admin mode; an unrecognized 401
+    // challenge classifies as NotAdminApi.
+    assert!(matches!(result, AdminProbeResult::NotAdminApi));
 }
 
 #[tokio::test]

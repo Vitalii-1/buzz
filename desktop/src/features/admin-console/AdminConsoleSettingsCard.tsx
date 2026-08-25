@@ -115,7 +115,6 @@ type ProbeUiState =
       source?: AdminPrincipalSource | null;
     }
   | { kind: "denied"; pubkeyHex: string }
-  | { kind: "tokenMode" }
   | { kind: "disabled"; origin: string }
   | { kind: "notAdminApi" }
   | { kind: "networkOrIntercepted" }
@@ -141,15 +140,6 @@ function ProbeStatusBadge({ uiState }: { uiState: ProbeUiState }) {
   }
   if (uiState.kind === "denied") {
     return <DeniedBadge pubkeyHex={uiState.pubkeyHex} />;
-  }
-  if (uiState.kind === "tokenMode") {
-    return (
-      <span className="flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400">
-        <Info className="h-3.5 w-3.5" />
-        Bearer-token mode. Use the web console — the desktop app only supports
-        NIP-98 auth.
-      </span>
-    );
   }
   if (uiState.kind === "disabled") {
     return (
@@ -206,8 +196,6 @@ function probeStateToUiState(
       };
     case "nip98Denied":
       return { kind: "denied", pubkeyHex };
-    case "tokenMode":
-      return { kind: "tokenMode" };
     case "disabled":
       return { kind: "disabled", origin };
     case "notAdminApi":

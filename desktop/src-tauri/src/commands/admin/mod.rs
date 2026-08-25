@@ -77,9 +77,6 @@ pub enum AdminProbeResult {
     /// attempt. Likely: pubkey not in `RELAY_OPERATOR_PUBKEYS`, clock skew, or
     /// relay config mismatch.
     Nip98Denied,
-    /// Bearer-token mode (`BUZZ_ADMIN_AUTH=token`). The desktop cannot mint a
-    /// bearer token; the operator must use the web console.
-    TokenMode,
     /// Auth is disabled (`BUZZ_ADMIN_AUTH=disabled`). No credential needed.
     Disabled,
     /// The origin is reachable but the `/api/admin/v1` prefix is absent or
@@ -120,7 +117,8 @@ type SignFn = Box<dyn Fn(&str) -> Result<String, String> + Send + Sync>;
 /// 4. 401 + `WWW-Authenticate: Nostr` → NIP-98 mode. Retry with a freshly
 ///    signed kind-27235. 200 + valid `ProbeResponse` → `Nip98Authorized`
 ///    carrying the relay-resolved `role`/`source`; non-200 → `Nip98Denied`.
-/// 5. 401 + `WWW-Authenticate: Bearer` → `TokenMode`.
+/// 5. Any other 401 (including a `WWW-Authenticate: Bearer` challenge, which
+///    is no longer a recognized Buzz admin mode) → `NotAdminApi`.
 /// 6. 403/404 or other non-401 → `NotAdminApi`.
 /// 7. Network/redirect/TLS error → `NetworkOrIntercepted`.
 #[tauri::command]
@@ -249,11 +247,8 @@ async fn admin_probe_inner(
             return Ok(AdminProbeResult::Nip98Denied);
         }
 
-        if www_auth.starts_with("bearer") {
-            return Ok(AdminProbeResult::TokenMode);
-        }
-
-        // Unknown 401 shape.
+        // Any other 401 shape (including a Bearer challenge, which is no longer
+        // a recognized Buzz admin mode) is an unrecognized auth challenge.
         return Ok(AdminProbeResult::NotAdminApi);
     }
 

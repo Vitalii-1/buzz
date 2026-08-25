@@ -33,8 +33,8 @@ export type ModerationNavResolution = {
  * - An advertised-only origin shows the entry when the probe plausibly
  *   authorizes (`nip98Authorized`/`disabled`) or is a transport flake
  *   (`networkOrIntercepted`/`error` — never a silent disappear on flake), and
- *   hides it on a definitive non-admin verdict (`nip98Denied`/`tokenMode`/
- *   `notAdminApi`). Fail-closed: any unrecognised outcome hides the entry.
+ *   hides it on a definitive non-admin verdict (`nip98Denied`/`notAdminApi`).
+ *   Fail-closed: any unrecognised outcome hides the entry.
  */
 export function shouldShowModerationNav(res: ModerationNavResolution): boolean {
   if (res.originSource === "none") return false;
