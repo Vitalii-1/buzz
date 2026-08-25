@@ -37,3 +37,6 @@ pub use config::{
 };
 pub use denial::DenialClass;
 pub use verifier::{AssertionKeySet, FederatedAssertionVerifier, IssuerKeySource, VerifierError};
+
+#[cfg(any(test, feature = "test-utils"))]
+pub use verifier::StaticIssuerKeySource;

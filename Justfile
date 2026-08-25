@@ -309,6 +309,17 @@ test-unit:
     set -euo pipefail
     if command -v cargo-nextest &>/dev/null; then
         cargo nextest run -p buzz-core -p buzz-auth --lib
+        # buzz-auth NIP-FI verifier integration + doctests. The verifier's
+        # regression suite (tests/nip_fi_verifier.rs) and the sealed-authority
+        # `compile_fail` doctests live outside `--lib`, so nothing above runs
+        # them — without this step the cross-issuer key-source-confusion
+        # regression and the authority-construction-seam seal ship untested.
+        # The integration tests need `test-utils` for the crate-owned
+        # StaticIssuerKeySource; the doctests prove the public API alone cannot
+        # forge the authority. nextest does not run doctests, hence the
+        # separate `cargo test --doc`.
+        cargo nextest run -p buzz-auth --features test-utils --test nip_fi_verifier
+        cargo test -p buzz-auth --doc
         cargo nextest run -p buzz-voice --lib
         cargo nextest run -p buzz-cli
         # buzz-db migrator/lint tests: pure SQL-parsing unit tests (no infra).

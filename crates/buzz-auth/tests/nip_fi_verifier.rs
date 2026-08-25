@@ -2,17 +2,23 @@
 //! (PR 1). Exercises the exact-wire-text denial contract, deterministic
 //! contract IDs, token-class enforcement including ID-token denial, and
 //! multi-issuer `(iss, sub)` selection, against real ES256-signed assertions.
+//!
+//! Gated on `test-utils`: the crate-owned [`StaticIssuerKeySource`] and the
+//! `AssertionKeySet::for_test` constructor are the only way to supply key
+//! material from outside the verifier module, and both are `test-utils`-only.
+//! `cargo clippy --all-targets` (default features) compiles this file empty;
+//! the unit-test job runs it with `--features test-utils`.
+#![cfg(feature = "test-utils")]
 
 use buzz_auth::{
     AssertionKeySet, ClientSubjectPosture, DenialClass, FederatedAssertionVerifier, FreshnessClass,
-    IssuerKeySource, IssuerPolicy, IssuerPolicyError, IssuerRegistry, SubjectClassContract,
+    IssuerPolicy, IssuerPolicyError, IssuerRegistry, StaticIssuerKeySource, SubjectClassContract,
     TokenClass, TransportContractId, VerifierError, CLIENT_ATTACHED_HEADER, NOSTR_PUBKEY_CLAIM,
     OAUTH_CLIENT_ID_CLAIM,
 };
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 
 // A fixed P-256 test key (PKCS#8 PEM) and its public JWK coordinates.
 const TEST_EC_PKCS8_PEM: &str = "-----BEGIN PRIVATE KEY-----\n\
@@ -36,26 +42,12 @@ Ne2tqOfFa0hRpa41DANab1/EuDGi7PtIo8xSYwkaoib1MAJlfLvRMjQA\n\
 const TEST_JWK_X_B: &str = "39HHG6dXOJjHelr0rpYr-WQEvIiFizXtrajnxWtIUaU";
 const TEST_JWK_Y_B: &str = "rjUMA1pvX8S4MaLs-0ijzFJjCRqiJvUwAmV8u9EyNAA";
 
-/// A trusted [`IssuerKeySource`] backed by a fixed issuer→snapshot map,
-/// standing in for PR 3's JWKS runtime. It only ever returns a snapshot bound
-/// to the exact issuer requested — the invariant the real source guarantees.
-struct MapKeySource(HashMap<String, AssertionKeySet>);
-
-impl MapKeySource {
-    fn new(sets: impl IntoIterator<Item = AssertionKeySet>) -> Self {
-        Self(
-            sets.into_iter()
-                .map(|s| (s.issuer().to_owned(), s))
-                .collect(),
-        )
-    }
-}
-
-impl IssuerKeySource for MapKeySource {
-    fn key_set(&self, issuer: &str) -> Option<AssertionKeySet> {
-        self.0.get(issuer).cloned()
-    }
-}
+/// A trusted [`StaticIssuerKeySource`] is used throughout, standing in for
+/// PR 3's JWKS runtime. Because the key-source trait is sealed, an external
+/// crate cannot implement its own source at all — the authority-construction
+/// seam is closed, and the only way to exercise the verifier is this
+/// crate-owned source. It returns only a snapshot bound to the exact issuer
+/// requested — the invariant the real source guarantees.
 
 fn test_jwks(kid: &str) -> JwkSet {
     jwks_with_coords(kid, TEST_JWK_X, TEST_JWK_Y)
@@ -77,7 +69,7 @@ fn jwks_with_coords(kid: &str, x: &str, y: &str) -> JwkSet {
 }
 
 fn key_set_for(issuer: &str) -> AssertionKeySet {
-    AssertionKeySet::new(issuer.to_owned(), 1, test_jwks(TEST_KID), None)
+    AssertionKeySet::for_test(issuer.to_owned(), 1, test_jwks(TEST_KID), None)
         .expect("nonzero generation, non-empty issuer")
 }
 
@@ -130,11 +122,11 @@ fn dedicated_policy(issuer: &str) -> IssuerPolicy {
     .expect("valid policy")
 }
 
-fn verifier_with(policy: IssuerPolicy) -> FederatedAssertionVerifier<MapKeySource> {
+fn verifier_with(policy: IssuerPolicy) -> FederatedAssertionVerifier<StaticIssuerKeySource> {
     let mut registry = IssuerRegistry::new();
     let issuer = policy.issuer().to_owned();
     registry.insert(policy);
-    FederatedAssertionVerifier::new(registry, MapKeySource::new([key_set_for(&issuer)]))
+    FederatedAssertionVerifier::new(registry, StaticIssuerKeySource::new([key_set_for(&issuer)]))
 }
 
 fn now() -> i64 {
@@ -563,7 +555,7 @@ fn same_subject_distinct_issuers_are_distinct_identities() {
     // snapshot to each issuer and the verifier selects by authenticated `iss`.
     let verifier = FederatedAssertionVerifier::new(
         registry,
-        MapKeySource::new([key_set_for(issuer_a), key_set_for(issuer_b)]),
+        StaticIssuerKeySource::new([key_set_for(issuer_a), key_set_for(issuer_b)]),
     );
 
     let sign = |iss: &str| {
@@ -580,19 +572,31 @@ fn same_subject_distinct_issuers_are_distinct_identities() {
 // ---- Cross-issuer key-source confusion (CRITICAL #1) ---------------------
 
 #[test]
-fn cross_issuer_token_cannot_mint_through_the_only_public_seam() {
-    // The structural regression for the key-source-confusion bypass: issuer B
-    // signs a token with its own real key while the signed claim says `iss=A`.
-    // Because `verify` takes only the token and resolves the snapshot from the
-    // trusted source keyed by the authenticated `iss`, issuer B's keys can
-    // never authenticate a token claiming issuer A — there is no seam through
-    // which a caller can supply or relabel key material.
+fn cross_issuer_token_cannot_mint_through_any_seam() {
+    // The structural regression for the key-source-confusion bypass. Two seams
+    // are covered:
+    //
+    // 1. Request seam: issuer B signs a token with its own real key while the
+    //    signed claim says `iss=A`. `verify` takes only the token and resolves
+    //    the snapshot from the trusted source keyed by the authenticated `iss`,
+    //    so B's keys can never authenticate a token claiming issuer A.
+    //
+    // 2. Authority-construction seam: an external `buzz_auth` consumer cannot
+    //    even build the relabelling authority. `AssertionKeySet` has no public
+    //    constructor and `IssuerKeySource` is sealed, so external code can
+    //    neither put B's JWKS into a snapshot labelled A nor supply its own
+    //    source that does. The exploit that minted sealed `(A, victim)` at the
+    //    public verifier constructor no longer type-checks — see the
+    //    `tests/ui/*` compile-fail cases exercised by
+    //    `authority_construction_seam_is_closed_to_external_crates`.
     let issuer_a = "https://a.example";
     let issuer_b = "https://b.example";
 
-    // Each issuer's source snapshot carries only its own real public key.
-    let key_a = AssertionKeySet::new(issuer_a.to_owned(), 1, test_jwks(TEST_KID), None).unwrap();
-    let key_b = AssertionKeySet::new(
+    // Each issuer's source snapshot carries only its own real public key. Even
+    // here — inside the crate, using the test-only constructor — the snapshot's
+    // issuer label is bound to the JWKS it actually authenticates.
+    let key_a = key_set_for(issuer_a);
+    let key_b = AssertionKeySet::for_test(
         issuer_b.to_owned(),
         1,
         jwks_with_coords(TEST_KID, TEST_JWK_X_B, TEST_JWK_Y_B),
@@ -603,7 +607,8 @@ fn cross_issuer_token_cannot_mint_through_the_only_public_seam() {
     let mut registry = IssuerRegistry::new();
     registry.insert(dedicated_policy(issuer_a));
     registry.insert(dedicated_policy(issuer_b));
-    let verifier = FederatedAssertionVerifier::new(registry, MapKeySource::new([key_a, key_b]));
+    let verifier =
+        FederatedAssertionVerifier::new(registry, StaticIssuerKeySource::new([key_a, key_b]));
 
     // Token signed by B's key, claiming `iss=A`. The verifier selects issuer
     // A's policy and issuer A's snapshot; B's signature fails against A's key.
@@ -655,7 +660,7 @@ fn registered_issuer_without_key_snapshot_is_unavailable_not_rejected() {
         r
     };
     // Empty key source: the issuer is registered but has no snapshot.
-    let verifier = FederatedAssertionVerifier::new(registry, MapKeySource::new([]));
+    let verifier = FederatedAssertionVerifier::new(registry, StaticIssuerKeySource::new([]));
     let token = mint(Some("nip-fi+jwt"), TEST_KID, json!({ "sub": "u" }));
     let err = verifier.verify(&token).unwrap_err();
     assert_eq!(err, VerifierError::KeySourceUnavailable);
@@ -664,24 +669,16 @@ fn registered_issuer_without_key_snapshot_is_unavailable_not_rejected() {
 
 #[test]
 fn misbinding_key_source_is_rejected_by_defensive_check() {
-    // Defense-in-depth: a buggy/hostile IssuerKeySource that returns a snapshot
-    // labelled for a different issuer than requested must not authenticate. The
-    // verifier re-checks the returned snapshot's issuer against the selected
-    // policy and denies on mismatch, so a source contract violation cannot
-    // cross issuers even though the honest source never triggers this.
-    struct MisbindingSource(AssertionKeySet);
-    impl IssuerKeySource for MisbindingSource {
-        fn key_set(&self, _issuer: &str) -> Option<AssertionKeySet> {
-            // Always returns a snapshot bound to the WRONG issuer.
-            Some(self.0.clone())
-        }
-    }
-
+    // Defense-in-depth: even the crate-owned source, if it returned a snapshot
+    // labelled for a different issuer than requested, must not authenticate.
+    // The verifier re-checks the returned snapshot's issuer against the
+    // selected policy and denies on mismatch, so a source contract violation
+    // cannot cross issuers even though the honest source never triggers this.
     let mut registry = IssuerRegistry::new();
     registry.insert(dedicated_policy(ISSUER));
     let verifier = FederatedAssertionVerifier::new(
         registry,
-        MisbindingSource(key_set_for("https://other.example")),
+        StaticIssuerKeySource::misbinding(key_set_for("https://other.example")),
     );
     let token = mint(Some("nip-fi+jwt"), TEST_KID, json!({ "sub": "u" }));
     assert_eq!(

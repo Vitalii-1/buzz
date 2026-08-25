@@ -3,8 +3,11 @@
 //! Every accepted compact JWS feeds this one contract and produces a sealed
 //! [`VerifiedAssertion`]. Multi-issuer selection happens here: the exact `iss`
 //! carried by the token selects one [`IssuerPolicy`] and its key source; there
-//! is no single-global-issuer assumption. All failures collapse to the public
-//! [`DenialClass::EvidenceRejected`] class; the granular
+//! is no single-global-issuer assumption. Almost every failure collapses to the
+//! public [`DenialClass::EvidenceRejected`] class; the sole exception is
+//! [`VerifierError::KeySourceUnavailable`], an unreadable authoritative
+//! dependency that maps to [`DenialClass::AuthorizationUnavailable`] so a
+//! missing key snapshot never masquerades as rejected evidence. The granular
 //! [`VerifierError`] variants are for access-controlled logs and metrics only.
 //!
 //! Corrections applied to the mined #1476 verifier, per the settled spec:
@@ -37,17 +40,37 @@ use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::fmt;
 
+/// Sealing for [`IssuerKeySource`]: only types defined in this crate can name
+/// this private supertrait, so no external `buzz_auth` consumer can implement
+/// the key-source trait. Combined with the crate-private [`AssertionKeySet`]
+/// constructor, this makes the accepted issuer→JWKS authority impossible to
+/// synthesize outside the crate's trusted configuration path.
+mod sealed {
+    /// Private marker preventing external implementations of the key source.
+    pub trait Sealed {}
+}
+
 /// One issuer's key source: a JWKS snapshot bound to the exact `iss` it
 /// authenticates, with a positive generation and an optional hard deadline
 /// beyond which the snapshot can no longer authorize.
 ///
 /// The issuer binding is the anti-cross-issuer control (`FI-INV`): a snapshot
 /// authenticates only tokens whose signed `iss` equals [`Self::issuer`]. The
-/// binding is not caller-forgeable at the request seam because [`verify`]
-/// takes no snapshot argument — it resolves the snapshot from its trusted
-/// [`IssuerKeySource`] keyed by the token's authenticated `iss`. Building a
-/// snapshot (and the source that serves it) is the trusted configuration act
-/// PR 3's JWKS runtime performs at startup, not a per-request input.
+/// binding is not caller-forgeable, at the request seam or the authority-
+/// construction seam: [`verify`] takes no snapshot argument, and this type has
+/// no public constructor, so an external consumer cannot build a snapshot that
+/// labels issuer B's JWKS as issuer A. Building a snapshot (and the source that
+/// serves it) is the trusted configuration act PR 3's JWKS runtime performs at
+/// startup, not a per-request or external input.
+///
+/// The crate-private constructor is a live regression: an external crate that
+/// tries to build a snapshot — the pass-2 exploit's relabelling step — cannot
+/// even name the constructor, so this fails to compile.
+///
+/// ```compile_fail
+/// use buzz_auth::AssertionKeySet;
+/// let _forge = AssertionKeySet::new;
+/// ```
 ///
 /// [`verify`]: FederatedAssertionVerifier::verify
 #[derive(Clone)]
@@ -61,8 +84,9 @@ pub struct AssertionKeySet {
 impl AssertionKeySet {
     /// Seal a parsed JWKS for exactly one issuer, with a positive cache
     /// generation and optional deadline. A zero generation or empty issuer is
-    /// rejected.
-    pub fn new(
+    /// rejected. Crate-private: only the trusted in-crate configuration path
+    /// (PR 3's JWKS runtime) may bind key material to an issuer.
+    pub(crate) fn new(
         issuer: String,
         generation: u64,
         jwks: JwkSet,
@@ -88,6 +112,20 @@ impl AssertionKeySet {
     pub const fn generation(&self) -> u64 {
         self.generation
     }
+
+    /// Build a snapshot for tests and the JWKS-runtime integration surface,
+    /// without the crate-private trust boundary. Available only under `test` or
+    /// the `test-utils` feature so production callers still cannot synthesize
+    /// an issuer→JWKS authority.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn for_test(
+        issuer: String,
+        generation: u64,
+        jwks: JwkSet,
+        hard_deadline: Option<DateTime<Utc>>,
+    ) -> Option<Self> {
+        Self::new(issuer, generation, jwks, hard_deadline)
+    }
 }
 
 impl fmt::Debug for AssertionKeySet {
@@ -104,11 +142,81 @@ impl fmt::Debug for AssertionKeySet {
 /// relabel one issuer's JWKS as another's — the cross-issuer bypass at the old
 /// `verify(token, key_set)` seam. Configuring the source (PR 3's JWKS runtime)
 /// is a trusted startup act, not per-request input.
-pub trait IssuerKeySource {
+///
+/// This trait is sealed via a private supertrait, so it cannot be implemented
+/// outside `buzz_auth`. That closes the authority-construction seam: an
+/// external consumer cannot supply its own source that returns issuer B's JWKS
+/// labelled as issuer A, because it can neither implement this trait nor build
+/// an [`AssertionKeySet`]. The accepted issuer→JWKS authority is entirely
+/// crate-owned.
+///
+/// The seal is a live regression: an external crate that tries to implement
+/// this trait fails to compile because the private supertrait cannot be named.
+///
+/// ```compile_fail
+/// use buzz_auth::{AssertionKeySet, IssuerKeySource};
+/// struct Forge;
+/// impl IssuerKeySource for Forge {
+///     fn key_set(&self, _issuer: &str) -> Option<AssertionKeySet> { None }
+/// }
+/// ```
+pub trait IssuerKeySource: sealed::Sealed {
     /// The current key snapshot bound to this exact issuer, or `None` when the
     /// issuer has no available snapshot. Implementations MUST return only a
     /// snapshot whose [`AssertionKeySet::issuer`] equals `issuer`.
     fn key_set(&self, issuer: &str) -> Option<AssertionKeySet>;
+}
+
+/// A fixed issuer→snapshot key source for tests and the JWKS-runtime
+/// integration surface. Because [`IssuerKeySource`] is sealed, external tests
+/// cannot implement their own source; this crate-owned one, gated behind `test`
+/// or the `test-utils` feature, is how they exercise the verifier. An honest
+/// source returns only the snapshot bound to the exact issuer requested — the
+/// invariant the real runtime source guarantees.
+#[cfg(any(test, feature = "test-utils"))]
+#[derive(Clone, Default)]
+pub struct StaticIssuerKeySource {
+    snapshots: std::collections::HashMap<String, AssertionKeySet>,
+    /// When set, returned for every requested issuer regardless of its binding,
+    /// to exercise the verifier's defensive issuer re-check.
+    misbound: Option<AssertionKeySet>,
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl StaticIssuerKeySource {
+    /// Build an honest source from a set of snapshots, keyed by each snapshot's
+    /// issuer.
+    pub fn new(snapshots: impl IntoIterator<Item = AssertionKeySet>) -> Self {
+        Self {
+            snapshots: snapshots
+                .into_iter()
+                .map(|s| (s.issuer().to_owned(), s))
+                .collect(),
+            misbound: None,
+        }
+    }
+
+    /// A hostile/buggy source that returns the given snapshot — bound to a
+    /// different issuer than requested — for every lookup, to exercise the
+    /// verifier's defensive issuer re-check.
+    pub fn misbinding(snapshot: AssertionKeySet) -> Self {
+        Self {
+            snapshots: std::collections::HashMap::new(),
+            misbound: Some(snapshot),
+        }
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl sealed::Sealed for StaticIssuerKeySource {}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl IssuerKeySource for StaticIssuerKeySource {
+    fn key_set(&self, issuer: &str) -> Option<AssertionKeySet> {
+        self.misbound
+            .clone()
+            .or_else(|| self.snapshots.get(issuer).cloned())
+    }
 }
 
 /// The provider-neutral assertion verifier over a closed multi-issuer registry
@@ -280,8 +388,10 @@ impl<S: IssuerKeySource> FederatedAssertionVerifier<S> {
     }
 }
 
-/// A closed, stable verifier failure carrying no credential material. Every
-/// variant maps to the public [`DenialClass::EvidenceRejected`] class.
+/// A closed, stable verifier failure carrying no credential material. Almost
+/// every variant maps to the public [`DenialClass::EvidenceRejected`] class;
+/// [`Self::KeySourceUnavailable`] maps to
+/// [`DenialClass::AuthorizationUnavailable`] instead (see [`Self::denial_class`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum VerifierError {
     /// The compact JWS was empty, oversized, or structurally malformed.
