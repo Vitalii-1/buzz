@@ -454,11 +454,9 @@ jobs:
           --health-timeout 5s
           --health-retries 12
     env:
-      BUZZ_POSTGRES_ADMIN_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/postgres
       PGHOST: localhost
       PGPORT: "5432"
       PGUSER: buzz
-      PGPASSWORD: ${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}
       PG_BIN_DIR: /usr/bin
       REDIS_URL: redis://localhost:6379
       PGSCHEMA_PLAN_HOST: localhost
@@ -478,6 +476,9 @@ jobs:
           name: desktop-e2e-relay
           path: target/ci
       - name: PostgreSQL-backed tests
+        env:
+          BUZZ_POSTGRES_ADMIN_URL: postgres://buzz:${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}@localhost:5432/postgres
+          PGPASSWORD: ${{ env.BUZZ_TEST_POSTGRES_PASSWORD }}
         run: |
           scripts/postgres-test-run.sh \
             --archive-file target/ci/postgres-tests.tar.zst
