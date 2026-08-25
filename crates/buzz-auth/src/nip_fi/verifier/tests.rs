@@ -3,19 +3,15 @@
 //! contract IDs, token-class enforcement including ID-token denial, and
 //! multi-issuer `(iss, sub)` selection, against real ES256-signed assertions.
 //!
-//! Gated on `test-utils`: the crate-owned [`StaticIssuerKeySource`] and the
-//! `AssertionKeySet::for_test` constructor are the only way to supply key
-//! material from outside the verifier module, and both are `test-utils`-only.
-//! `cargo clippy --all-targets` (default features) compiles this file empty;
-//! the unit-test job runs it with `--features test-utils`.
-#![cfg(feature = "test-utils")]
+//! In-crate unit tests: the crate-owned [`StaticIssuerKeySource`] and the
+//! crate-private `AssertionKeySet::new` constructor are the only way to supply
+//! key material to the verifier, and both are `cfg(test)`-only — reachable
+//! here because this module compiles inside `buzz_auth` under `cargo test`, but
+//! not exposed to any dependent crate under any Cargo feature. That keeps the
+//! issuer→JWKS authority entirely crate-owned.
 
-use buzz_auth::{
-    AssertionKeySet, ClientSubjectPosture, DenialClass, FederatedAssertionVerifier, FreshnessClass,
-    IssuerPolicy, IssuerPolicyError, IssuerRegistry, StaticIssuerKeySource, SubjectClassContract,
-    TokenClass, TransportContractId, VerifierError, CLIENT_ATTACHED_HEADER, NOSTR_PUBKEY_CLAIM,
-    OAUTH_CLIENT_ID_CLAIM,
-};
+use super::*;
+use crate::nip_fi::{IssuerPolicyError, SubjectClassContract, CLIENT_ATTACHED_HEADER};
 use jsonwebtoken::jwk::JwkSet;
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde_json::{json, Value};
@@ -69,7 +65,7 @@ fn jwks_with_coords(kid: &str, x: &str, y: &str) -> JwkSet {
 }
 
 fn key_set_for(issuer: &str) -> AssertionKeySet {
-    AssertionKeySet::for_test(issuer.to_owned(), 1, test_jwks(TEST_KID), None)
+    AssertionKeySet::new(issuer.to_owned(), 1, test_jwks(TEST_KID), None)
         .expect("nonzero generation, non-empty issuer")
 }
 
@@ -596,7 +592,7 @@ fn cross_issuer_token_cannot_mint_through_any_seam() {
     // here — inside the crate, using the test-only constructor — the snapshot's
     // issuer label is bound to the JWKS it actually authenticates.
     let key_a = key_set_for(issuer_a);
-    let key_b = AssertionKeySet::for_test(
+    let key_b = AssertionKeySet::new(
         issuer_b.to_owned(),
         1,
         jwks_with_coords(TEST_KID, TEST_JWK_X_B, TEST_JWK_Y_B),

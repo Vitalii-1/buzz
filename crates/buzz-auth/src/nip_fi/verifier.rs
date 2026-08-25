@@ -112,20 +112,6 @@ impl AssertionKeySet {
     pub const fn generation(&self) -> u64 {
         self.generation
     }
-
-    /// Build a snapshot for tests and the JWKS-runtime integration surface,
-    /// without the crate-private trust boundary. Available only under `test` or
-    /// the `test-utils` feature so production callers still cannot synthesize
-    /// an issuer→JWKS authority.
-    #[cfg(any(test, feature = "test-utils"))]
-    pub fn for_test(
-        issuer: String,
-        generation: u64,
-        jwks: JwkSet,
-        hard_deadline: Option<DateTime<Utc>>,
-    ) -> Option<Self> {
-        Self::new(issuer, generation, jwks, hard_deadline)
-    }
 }
 
 impl fmt::Debug for AssertionKeySet {
@@ -167,26 +153,26 @@ pub trait IssuerKeySource: sealed::Sealed {
     fn key_set(&self, issuer: &str) -> Option<AssertionKeySet>;
 }
 
-/// A fixed issuer→snapshot key source for tests and the JWKS-runtime
-/// integration surface. Because [`IssuerKeySource`] is sealed, external tests
-/// cannot implement their own source; this crate-owned one, gated behind `test`
-/// or the `test-utils` feature, is how they exercise the verifier. An honest
-/// source returns only the snapshot bound to the exact issuer requested — the
-/// invariant the real runtime source guarantees.
-#[cfg(any(test, feature = "test-utils"))]
+/// A fixed issuer→snapshot key source for the in-crate verifier tests,
+/// standing in for PR 3's JWKS runtime. It is `cfg(test)`-only — not behind a
+/// downstream-selectable Cargo feature — so no dependent crate can enable it to
+/// reconstruct the authority. An honest source returns only the snapshot bound
+/// to the exact issuer requested, the invariant the real runtime source
+/// guarantees.
+#[cfg(test)]
 #[derive(Clone, Default)]
-pub struct StaticIssuerKeySource {
+pub(crate) struct StaticIssuerKeySource {
     snapshots: std::collections::HashMap<String, AssertionKeySet>,
     /// When set, returned for every requested issuer regardless of its binding,
     /// to exercise the verifier's defensive issuer re-check.
     misbound: Option<AssertionKeySet>,
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 impl StaticIssuerKeySource {
     /// Build an honest source from a set of snapshots, keyed by each snapshot's
     /// issuer.
-    pub fn new(snapshots: impl IntoIterator<Item = AssertionKeySet>) -> Self {
+    pub(crate) fn new(snapshots: impl IntoIterator<Item = AssertionKeySet>) -> Self {
         Self {
             snapshots: snapshots
                 .into_iter()
@@ -199,7 +185,7 @@ impl StaticIssuerKeySource {
     /// A hostile/buggy source that returns the given snapshot — bound to a
     /// different issuer than requested — for every lookup, to exercise the
     /// verifier's defensive issuer re-check.
-    pub fn misbinding(snapshot: AssertionKeySet) -> Self {
+    pub(crate) fn misbinding(snapshot: AssertionKeySet) -> Self {
         Self {
             snapshots: std::collections::HashMap::new(),
             misbound: Some(snapshot),
@@ -207,10 +193,10 @@ impl StaticIssuerKeySource {
     }
 }
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 impl sealed::Sealed for StaticIssuerKeySource {}
 
-#[cfg(any(test, feature = "test-utils"))]
+#[cfg(test)]
 impl IssuerKeySource for StaticIssuerKeySource {
     fn key_set(&self, issuer: &str) -> Option<AssertionKeySet> {
         self.misbound
@@ -839,3 +825,6 @@ fn base64url_decode(segment: &str) -> Result<Vec<u8>, VerifierError> {
         .decode(segment)
         .map_err(|_| VerifierError::MalformedToken)
 }
+
+#[cfg(test)]
+mod tests;
