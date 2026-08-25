@@ -26,8 +26,16 @@ verifier.
 
 Every task declares `metadata.evaluation_layer` in `task.toml`:
 
-- **Conformance** tasks pin deterministic product and prompt regressions. They default to **k=1**.
-- **Workflow** tasks measure multi-step collaboration capabilities where trial variance matters. They default to **k=3**, not the Terminal-Bench leaderboard default of 5.
+| Layer | Question | Default trials | Typical cadence |
+| --- | --- | ---: | --- |
+| Conformance | Did Buzz preserve a known product contract? | k=1 | Targeted PR, nightly, or pre-release |
+| Workflow | How capable is the agent at realistic Buzz work? | k=3 | Nightly or weekly on a fixed condition |
+
+Report conformance results per behavior, not as an average capability score.
+Use workflow pass rates and trends as the benchmark headline.
+
+Fast verifier fixtures remain ordinary CI. They validate grading logic, but do
+not replace agent trials across the model, base prompt, CLI, and relay.
 
 The task identity remains `buzz-native/<task>` in both layers; the wrapper reads
 the metadata instead of encoding the layer in task names.
