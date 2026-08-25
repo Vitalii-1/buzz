@@ -6,14 +6,13 @@ import {
   useRouter,
 } from "@tanstack/react-router";
 
+import { commitGuardedNavigation } from "@/app/navigation/commitGuardedNavigation";
 import { openSearchHitWithNavigation } from "@/app/navigation/searchHitNavigation";
 import {
-  allowNavigation,
   type GuardedNavigation,
   traverseHistory,
 } from "@/app/navigation/navigationGuard";
 import type { SearchHit } from "@/shared/api/types";
-import { beginChannelSwitchTrace } from "@/shared/lib/channelSwitchPerf";
 
 type NavigationBehavior = {
   force?: boolean;
@@ -37,27 +36,25 @@ export function useAppNavigation() {
       },
       behavior: NavigationBehavior = {},
       guardedTarget?: GuardedNavigation,
+      traceChannelId?: string,
     ) => {
       const nextLocation = router.buildLocation(next as never);
-
-      if (location.href === nextLocation.href && !behavior.force) {
-        return false;
-      }
-
-      if (
-        !allowNavigation(
-          guardedTarget ?? { kind: "route", href: nextLocation.href },
-        )
-      ) {
-        return false;
-      }
-
-      await navigate({
-        ...next,
-        replace: behavior.replace,
-        resetScroll: behavior.resetScroll,
-      } as never);
-      return true;
+      return commitGuardedNavigation({
+        currentHref: location.href,
+        force: behavior.force,
+        guardedTarget: guardedTarget ?? {
+          kind: "route",
+          href: nextLocation.href,
+        },
+        navigate: () =>
+          navigate({
+            ...next,
+            replace: behavior.replace,
+            resetScroll: behavior.resetScroll,
+          } as never),
+        nextHref: nextLocation.href,
+        traceChannelId,
+      });
     },
     [location.href, navigate, router],
   );
@@ -272,16 +269,6 @@ export function useAppNavigation() {
         threadRootId?: string | null;
       },
     ) => {
-      // Every channel navigation entry point funnels through here, so this
-      // is the single click-time anchor for the switch trace. Re-selecting
-      // the already-active channel is a no-op navigation: the channel's
-      // effects never rerun, nothing would settle the trace, and it would
-      // squat on the singleton until timeout — so don't open one. (History
-      // back/forward bypasses goChannel entirely and is deliberately
-      // untraced.)
-      if (!location.pathname.endsWith(`/channels/${channelId}`)) {
-        beginChannelSwitchTrace(channelId);
-      }
       return commitNavigation(
         {
           to: "/channels/$channelId",
@@ -315,6 +302,17 @@ export function useAppNavigation() {
               threadRootId: options.threadRootId ?? null,
             }
           : undefined,
+        // Every channel navigation entry point funnels through here, so this
+        // is the single click-time anchor for the switch trace; it opens
+        // inside commitGuardedNavigation only after the navigation guard
+        // accepts. Re-selecting the already-active channel is a no-op
+        // navigation: the channel's effects never rerun, nothing would
+        // settle the trace, and it would squat on the singleton until
+        // timeout — so don't open one. (History back/forward bypasses
+        // goChannel entirely and is deliberately untraced.)
+        location.pathname.endsWith(`/channels/${channelId}`)
+          ? undefined
+          : channelId,
       );
     },
     [commitNavigation, location.pathname],
