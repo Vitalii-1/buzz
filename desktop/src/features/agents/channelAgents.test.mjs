@@ -4,8 +4,15 @@ import test from "node:test";
 import { provisionChannelManagedAgent } from "./channelAgents.ts";
 
 const PUBKEY = "a".repeat(64);
+const RUNTIME = {
+  id: "goose",
+  label: "Goose",
+  command: "goose",
+  defaultArgs: [],
+  mcpCommand: "buzz-dev-mcp",
+};
 
-function makeAgent(personaId) {
+function makeAgent(personaId, overrides = {}) {
   return {
     pubkey: PUBKEY,
     name: "reviewer",
@@ -47,7 +54,8 @@ function makeAgent(personaId) {
     backend: { type: "local" },
     backendAgentId: null,
     respondTo: "anyone",
-    respondToAllowlist: [],
+    respondToAllowlist: [PUBKEY],
+    ...overrides,
   };
 }
 
@@ -97,7 +105,7 @@ function toRawAgent(agent) {
   };
 }
 
-test("reuse applies an explicit owner-only author gate", async (t) => {
+test("reuse applies the owner-only default and clears stale allowlists", async (t) => {
   const priorWindow = globalThis.window;
   t.after(() => {
     globalThis.window = priorWindow;
@@ -114,7 +122,8 @@ test("reuse applies an explicit owner-only author gate", async (t) => {
         return Promise.resolve({
           agent: toRawAgent({
             ...existing,
-            respondTo: "owner-only",
+            respondTo: args.input.respondTo,
+            respondToAllowlist: args.input.respondToAllowlist,
           }),
           profile_sync_error: null,
         });
@@ -123,16 +132,9 @@ test("reuse applies an explicit owner-only author gate", async (t) => {
 
     const result = await provisionChannelManagedAgent(
       {
-        runtime: {
-          id: "goose",
-          label: "Goose",
-          command: "goose",
-          defaultArgs: [],
-          mcpCommand: "buzz-dev-mcp",
-        },
+        runtime: RUNTIME,
         name: "reviewer",
         personaId,
-        respondTo: "owner-only",
       },
       {
         managedAgents: [existing],
@@ -142,6 +144,42 @@ test("reuse applies an explicit owner-only author gate", async (t) => {
 
     assert.equal(calls.length, 1);
     assert.equal(calls[0][1].input.respondTo, "owner-only");
+    assert.deepEqual(calls[0][1].input.respondToAllowlist, []);
     assert.equal(result.agent.respondTo, "owner-only");
+    assert.deepEqual(result.agent.respondToAllowlist, []);
+  }
+});
+
+test("reuse skips updates when the owner-only default already matches", async (t) => {
+  const priorWindow = globalThis.window;
+  t.after(() => {
+    globalThis.window = priorWindow;
+  });
+
+  globalThis.window ??= {};
+  window.__TAURI_INTERNALS__ = {
+    invoke(command) {
+      assert.fail(`unexpected ${command} call`);
+    },
+  };
+
+  for (const personaId of ["persona-1", null]) {
+    const existing = makeAgent(personaId, {
+      respondTo: "owner-only",
+      respondToAllowlist: [],
+    });
+    const result = await provisionChannelManagedAgent(
+      {
+        runtime: RUNTIME,
+        name: "reviewer",
+        personaId,
+      },
+      {
+        managedAgents: [existing],
+        channelMemberPubkeys: new Set(),
+      },
+    );
+
+    assert.equal(result.agent, existing);
   }
 });

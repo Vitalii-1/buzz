@@ -252,6 +252,34 @@ export async function ensureChannelAgentPresetInChannel(
   };
 }
 
+async function applyInboundAuthorGateForReuse(
+  agent: ManagedAgent,
+  input: CreateChannelManagedAgentInput,
+) {
+  // Creation defaults an omitted mode to owner-only. Reuse must apply the
+  // same default instead of inheriting the agent's previous access policy.
+  const respondTo = input.respondTo ?? "owner-only";
+  const respondToAllowlist =
+    respondTo === "allowlist" ? (input.respondToAllowlist ?? []) : [];
+  const allowlistMatches =
+    agent.respondToAllowlist.length === respondToAllowlist.length &&
+    agent.respondToAllowlist.every(
+      (pubkey, index) => pubkey === respondToAllowlist[index],
+    );
+
+  if (agent.respondTo === respondTo && allowlistMatches) {
+    return agent;
+  }
+
+  return (
+    await updateManagedAgent({
+      pubkey: agent.pubkey,
+      respondTo,
+      respondToAllowlist,
+    })
+  ).agent;
+}
+
 export async function provisionChannelManagedAgent(
   input: CreateChannelManagedAgentInput,
   context?: {
@@ -279,21 +307,10 @@ export async function provisionChannelManagedAgent(
       context.channelMemberPubkeys,
     );
     if (reusable) {
-      // Apply the caller's respondTo settings so the user's permission
-      // choice in the dialog is always honored, even when reusing.
-      const needsRespondToUpdate = input.respondTo !== undefined;
-      const updatedAgent = needsRespondToUpdate
-        ? (
-            await updateManagedAgent({
-              pubkey: reusable.pubkey,
-              respondTo: input.respondTo,
-              respondToAllowlist:
-                input.respondTo === "allowlist"
-                  ? input.respondToAllowlist
-                  : undefined,
-            })
-          ).agent
-        : reusable;
+      const updatedAgent = await applyInboundAuthorGateForReuse(
+        reusable,
+        input,
+      );
 
       return {
         agent: updatedAgent,
@@ -318,19 +335,10 @@ export async function provisionChannelManagedAgent(
       context.channelMemberPubkeys,
     );
     if (reusable) {
-      const needsRespondToUpdate = input.respondTo !== undefined;
-      const updatedAgent = needsRespondToUpdate
-        ? (
-            await updateManagedAgent({
-              pubkey: reusable.pubkey,
-              respondTo: input.respondTo,
-              respondToAllowlist:
-                input.respondTo === "allowlist"
-                  ? input.respondToAllowlist
-                  : undefined,
-            })
-          ).agent
-        : reusable;
+      const updatedAgent = await applyInboundAuthorGateForReuse(
+        reusable,
+        input,
+      );
 
       return {
         agent: updatedAgent,
