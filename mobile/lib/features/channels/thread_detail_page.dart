@@ -252,9 +252,11 @@ class ThreadDetailPage extends HookConsumerWidget {
     final initialTailSettle = useMemoized(InitialThreadTailSettle.new);
     final isAtThreadTail = useState(true);
     final isNavigatingToThreadTail = useState(false);
+    final hidesLatestForComposerTailFollow = useState(false);
     final tailCorrectionInProgress = useRef(false);
     final tailCorrectionGeneration = useRef(0);
     final activeThreadScrollPosition = useRef<ScrollPosition?>(null);
+    final composerHasFocus = useListenable(composerFocusNode).hasFocus;
     final viewportHeight = useListenable(listViewport.height).value;
     final previousViewportHeight = useRef(viewportHeight);
     final settledImeLift = usesFixedAndroidImeViewport
@@ -321,10 +323,21 @@ class ThreadDetailPage extends HookConsumerWidget {
       final trailingBoundary =
           1 - ((Grid.xs + timelineBottomInset) / viewportHeight) + 0.001;
       final lastMessageIndex = _threadTailIndex(replies.length);
-      return itemPositionsListener.itemPositions.value.any(
-        (position) =>
-            position.index == lastMessageIndex &&
-            position.itemTrailingEdge <= trailingBoundary,
+      var tailItemIsLaidOut = false;
+      var tailItemIsVisible = false;
+      for (final item in itemPositionsListener.itemPositions.value) {
+        if (item.index != lastMessageIndex) continue;
+        tailItemIsLaidOut = true;
+        tailItemIsVisible = item.itemTrailingEdge <= trailingBoundary;
+        break;
+      }
+      final position = activeThreadScrollPosition.value;
+      return threadTailIsAtEffectiveEnd(
+        tailIsLaidOut: tailItemIsLaidOut,
+        tailIsVisible: tailItemIsVisible,
+        extentAfter: position != null && position.hasContentDimensions
+            ? position.extentAfter
+            : null,
       );
     }
 
@@ -387,7 +400,6 @@ class ThreadDetailPage extends HookConsumerWidget {
       final reachedTail = threadTailIsVisible();
       // Lazy children can revise maxScrollExtent for several frames. Keep
       // moving the same active position until the measured tail is visible;
-      // the cap only guards pathological layouts that never stabilize.
       if (!reachedTail && corrections < _latestTailCorrectionLimit) {
         jumpActiveScrollPositionToTail();
         WidgetsBinding.instance.addPostFrameCallback(
@@ -403,17 +415,7 @@ class ThreadDetailPage extends HookConsumerWidget {
       tailCorrectionInProgress.value = false;
       isNavigatingToThreadTail.value = false;
       if (revealViewport) initialViewportReady.value = true;
-      // Item positions can trail the ScrollPosition by a frame after an
-      // animated jump. Once the bounded lazy-layout correction is exhausted,
-      // trust an exact end-of-scroll position too: there is nowhere further
-      // for Latest to navigate, so leaving the control visible is misleading.
-      final position = activeThreadScrollPosition.value;
-      isAtThreadTail.value = threadTailCorrectionReachedEnd(
-        tailIsVisible: reachedTail,
-        extentAfter: position != null && position.hasContentDimensions
-            ? position.extentAfter
-            : null,
-      );
+      isAtThreadTail.value = reachedTail;
     }
 
     void correctThreadTailInstantly() {
@@ -432,6 +434,7 @@ class ThreadDetailPage extends HookConsumerWidget {
 
     void followThreadTailFromComposer() {
       if (userDragDetachedTailFollow.value) return;
+      hidesLatestForComposerTailFollow.value = true;
       initialTailSettle.abandon();
       initialViewportReady.value = true;
       tailIntent.endDrag();
@@ -863,6 +866,7 @@ class ThreadDetailPage extends HookConsumerWidget {
                 child: _ThreadMessageList(
                   viewport: listViewport,
                   onUserScrollStart: () {
+                    hidesLatestForComposerTailFollow.value = false;
                     initialTailSettle.abandon();
                     initialViewportReady.value = true;
                     tailCorrectionInProgress.value = false;
@@ -981,6 +985,8 @@ class ThreadDetailPage extends HookConsumerWidget {
                     threadViewportVisible &&
                     hasFetchedReplies &&
                     !isNavigatingToThreadTail.value &&
+                    !hidesLatestForComposerTailFollow.value &&
+                    !(composerHasFocus && !userDragDetachedTailFollow.value) &&
                     !isAtThreadTail.value,
                 onPressed: scrollToThreadLatest,
               ),

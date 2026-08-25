@@ -1,17 +1,20 @@
 part of 'thread_detail_page.dart';
 
-/// Returns whether a bounded tail correction reached the effective end.
+/// Returns whether the thread is at its effective scroll end.
 ///
-/// Item positions can lag the active scroll position by a frame, so an exact
-/// end-of-scroll measurement is sufficient even while the tail item still
+/// Item positions can lag or briefly oscillate during lazy layout, so an exact
+/// end-of-scroll measurement remains authoritative even while the tail item
 /// reports outside the visible boundary.
 @visibleForTesting
-bool threadTailCorrectionReachedEnd({
+bool threadTailIsAtEffectiveEnd({
+  required bool tailIsLaidOut,
   required bool tailIsVisible,
   required double? extentAfter,
 }) =>
     tailIsVisible ||
-    (extentAfter != null && extentAfter <= _threadTailScrollTolerance);
+    (tailIsLaidOut &&
+        extentAfter != null &&
+        extentAfter <= _threadTailScrollTolerance);
 
 int _threadTailIndex(int replyCount) => replyCount;
 
