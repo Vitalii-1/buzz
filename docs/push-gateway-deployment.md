@@ -31,6 +31,18 @@ the server-owned APNs topic, certificate-backed connection pool, and
 environment. No client request or relay grant can supply or override an APNs
 topic.
 
+This MVP has exactly one compiled-in application profile,
+`buzz-ios-dogfood`. The chart value
+`profiles.dogfood.appAttestAppId` is rendered as
+`BUZZ_PUSH_DOGFOOD_APP_ATTEST_APP_ID`; the gateway rejects startup when it is
+missing or empty. The exact `TEAMID.bundle-id` is environment-owned,
+non-secret deployment configuration. The chart's production values file leaves
+it empty deliberately so a production renderer must supply it from the GitOps
+environment rather than baking a Block team identifier into this repository.
+Supporting another application identity requires an explicit code, schema,
+chart, credential, and deployment change; this gateway does not currently
+select among multiple application profiles.
+
 Optional endpoint quota policy variables are `BUZZ_PUSH_ENDPOINT_QUOTA_WINDOW_SECONDS` (default `10`, max `86400`) and `BUZZ_PUSH_ENDPOINT_QUOTA_MAX_DELIVERIES` (default `10`, max `10000`). These are Buzz policy hypotheses, not Apple-published limits; tune under load while retaining a hard ceiling.
 
 ## Secret and key rotation rules
@@ -113,22 +125,20 @@ capability—not a raw APNs token—into the encrypted relay lease.
 
 ## Internal dogfood evaluation and rollback
 
-The MVP is ready to enable only when the canonical gateway has the dogfood
-profile enabled with its server-owned App Attest app ID, APNs topic, production
-certificate identity, and production APNs environment, and only the selected
-internal relay deployments set `BUZZ_PUSH_ENABLED=true`. Every iOS artifact
-contains the native push bridge and Notification Service Extension, but the
-client remains inactive until its current authenticated relay advertises a
-fully valid NIP-11 `nip-pl` descriptor. The App Store gateway profile remains
-configured but dormant.
+The MVP is ready to enable only when the canonical gateway's sole dogfood
+profile is configured with its server-owned App Attest app ID, APNs topic,
+production certificate identity, and production APNs environment, and only the
+selected internal relay deployments set `BUZZ_PUSH_ENABLED=true`. Every iOS
+artifact contains the native push bridge and Notification Service Extension,
+but the client remains inactive until its current authenticated relay
+advertises a fully valid NIP-11 `nip-pl` descriptor. There is no App Store
+gateway profile in this MVP.
 
-Local physical-device development may instead use the normal
-`xyz.block.buzz.mobile` development identity with sandbox entitlements. Its
-local gateway must enable only the closed App Store profile,
-configured with that profile's server-owned App Attest application ID, APNs
-topic, sandbox certificate, and sandbox environment. This is a development
-integration proof, not dogfood release validation, and does not authorize
-enabling the App Store profile on the canonical production deployment.
+Physical-device validation must use an application whose App Attest identity
+and APNs topic match the configured dogfood profile. The current gateway cannot
+enroll `xyz.block.buzz.mobile` or another bundle identifier merely by changing
+deployment values: adding another identity requires the explicit multi-profile
+work described above.
 
 Dogfood end-to-end release validation starts after this feature reaches `main`:
 publish the next immutable `mobile-vX.Y.Z-rc.N` candidate from the exact current
@@ -165,10 +175,10 @@ is designed.
 
 Rollback does not require deleting credentials or mutating existing leases.
 Set `BUZZ_PUSH_ENABLED=false` on the enabled relays to stop advertisement, lease
-acceptance, matching, workers, and new gateway traffic; disable the dogfood
-gateway profile if the gateway itself is unhealthy. Existing leases and gateway
-authorities then expire naturally. Do not enable the App Store gateway profile
-as part of this internal evaluation.
+acceptance, matching, workers, and new gateway traffic. If the gateway itself
+is unhealthy, disable the gateway deployment only after relay delivery is off.
+Existing leases and gateway authorities then expire naturally. Adding an App
+Store application profile is outside this internal evaluation.
 
 ## Helm production inputs
 
