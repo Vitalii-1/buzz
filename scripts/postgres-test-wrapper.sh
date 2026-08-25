@@ -50,7 +50,7 @@ source_database="$BUZZ_POSTGRES_DESIRED_TEMPLATE"
 
 # These tests own the migration lifecycle and intentionally begin empty.
 case "$NEXTEST_TEST_NAME" in
-  migration::postgres_tests::* | *::migration_schema_*)
+  migration::postgres_tests::* | migration_schema_* | *::migration_schema_*)
     schema_mode="migration"
     source_database="template0"
     ;;

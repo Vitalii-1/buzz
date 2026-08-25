@@ -38,6 +38,12 @@ RS
 
 python3 "$checker" "$fixture_root"
 
+packages="$("$repo_root/scripts/postgres-test-packages.sh" "$fixture_root")"
+if [[ "$packages" != "postgres-discovery-fixture" ]]; then
+  echo "expected fixture package discovery, got: $packages" >&2
+  exit 1
+fi
+
 cat >"$fixture_root/src/tests/postgres_nested.rs" <<'RS'
 #[test]
 #[ignore = "requires PostgreSQL"]

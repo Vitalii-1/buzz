@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 IGNORE_ATTRIBUTE = re.compile(r"#\s*\[\s*ignore\s*=")
@@ -156,13 +157,59 @@ def module_ranges(source: str) -> list[tuple[int, int, str]]:
     return ranges
 
 
+def crate_root(path: Path) -> Path | None:
+    for candidate in path.parents:
+        if (candidate / "Cargo.toml").is_file():
+            return candidate
+    return None
+
+
 def integration_binary_is_postgres(path: Path) -> bool:
-    crate_root = path.parent.parent
+    root = crate_root(path)
     return (
-        path.parent.name == "tests"
+        root is not None
+        and path.parent == root / "tests"
         and path.name.startswith("postgres_")
-        and (crate_root / "Cargo.toml").is_file()
     )
+
+
+def file_has_postgres_lane_test(path: Path) -> bool:
+    source = path.read_text(encoding="utf-8")
+    sanitized = sanitize_rust(source)
+    ranges = module_ranges(source)
+
+    for attribute_start, _attribute_end, reason in ignore_attributes(source, sanitized):
+        reason_lower = reason.lower()
+        modules = [name for start, end, name in ranges if start < attribute_start < end]
+        if (
+            ("postgres" in reason_lower or "postgresql" in reason_lower)
+            and not EXTERNAL_INFRA.search(reason)
+            and not any(name.startswith("external_infra") for name in modules)
+            and (
+                any(name.endswith("postgres_tests") for name in modules)
+                or integration_binary_is_postgres(path)
+            )
+        ):
+            return True
+    return False
+
+
+def postgres_packages(files: list[Path]) -> list[str]:
+    roots = {
+        root
+        for path in files
+        if file_has_postgres_lane_test(path)
+        if (root := crate_root(path)) is not None
+    }
+    packages = []
+    for root in roots:
+        with (root / "Cargo.toml").open("rb") as manifest:
+            package = tomllib.load(manifest).get("package", {})
+        name = package.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"discoverable PostgreSQL tests lack a package name: {root}")
+        packages.append(name)
+    return sorted(packages)
 
 
 def validate_file(path: Path) -> list[str]:
@@ -229,11 +276,19 @@ def rust_files(arguments: list[str]) -> list[Path]:
 
 
 def main() -> int:
-    if len(sys.argv) < 2:
-        print(f"usage: {Path(sys.argv[0]).name} <Rust source file or directory> [...]", file=sys.stderr)
+    arguments = sys.argv[1:]
+    print_packages = bool(arguments and arguments[0] == "--print-packages")
+    if print_packages:
+        arguments = arguments[1:]
+    if not arguments:
+        print(
+            f"usage: {Path(sys.argv[0]).name} [--print-packages] "
+            "<Rust source file or directory> [...]",
+            file=sys.stderr,
+        )
         return 2
     try:
-        files = rust_files(sys.argv[1:])
+        files = rust_files(arguments)
     except ValueError as error:
         print(error, file=sys.stderr)
         return 2
@@ -243,6 +298,15 @@ def main() -> int:
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
+    if print_packages:
+        try:
+            packages = postgres_packages(files)
+        except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
+            print(error, file=sys.stderr)
+            return 1
+        for package in packages:
+            print(package)
+        return 0
     print(f"validated PostgreSQL test discovery across {len(files)} Rust source files")
     return 0
 

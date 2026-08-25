@@ -230,7 +230,9 @@ checklist.
 `scripts/test-postgres-test-discovery.sh` enforces the convention across every
 Rust source file. It fails CI when an ignored PostgreSQL test would be omitted,
 or when a Redis-only or hybrid test is accidentally included, so module or file
-renames cannot silently change lane membership.
+renames cannot silently change lane membership. The archive and runner derive
+their Cargo package set from the same markers, so a database test in a new crate
+does not require a separate package-list update.
 
 The `postgres-ci` nextest profile creates one database per test process, so
 destructive and concurrent tests must use the database URL supplied through
@@ -257,8 +259,8 @@ schema bootstrap. PostgreSQL client tools are resolved from `PATH` unless
 `PG_BIN_DIR` is set. Tests that use Redis read `REDIS_URL`.
 
 With native PostgreSQL and Redis running, the complete lane is below. The
-runner bounds compilation to the seven PostgreSQL-backed packages used in CI
-and removes the run-scoped desired-state source database on exit.
+runner bounds compilation to the packages discovered from the current source
+tree and removes the run-scoped desired-state source database on exit.
 Per-test and source-database cleanup retries transient PostgreSQL disconnect
 races and emits a warning if all five attempts fail.
 

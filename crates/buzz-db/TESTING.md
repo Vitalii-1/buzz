@@ -1,8 +1,8 @@
 # PostgreSQL-backed tests in buzz-db
 
-The dedicated PostgreSQL CI lane discovers tests by structure rather than by
-an exact list of names. Follow this checklist so a new database test is run
-automatically and remains safe under parallel execution.
+The dedicated PostgreSQL CI lane discovers tests and Cargo packages by
+structure rather than by exact lists. Follow this checklist so a new database
+test is run automatically and remains safe under parallel execution.
 
 ## Adding a test
 

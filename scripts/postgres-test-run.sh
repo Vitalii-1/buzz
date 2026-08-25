@@ -5,6 +5,8 @@ set -euo pipefail
 
 : "${BUZZ_POSTGRES_ADMIN_URL:?set BUZZ_POSTGRES_ADMIN_URL to an administrator database URL}"
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 resolve_pg_command() {
   local name="$1"
   local candidate
@@ -63,17 +65,15 @@ trap 'exit 143' TERM
 
 nextest_args=("$@")
 if [[ "$#" -eq 0 ]]; then
-  nextest_args=(
-    -p buzz-audit
-    -p buzz-db
-    -p buzz-deletion
-    -p buzz-push-gateway
-    -p buzz-relay
-    -p buzz-search
-    -p buzz-workflow
-    --lib
-    --tests
-  )
+  package_args=()
+  while IFS= read -r package; do
+    package_args+=(-p "$package")
+  done < <("$repo_root/scripts/postgres-test-packages.sh")
+  if [[ "${#package_args[@]}" -eq 0 ]]; then
+    echo "no PostgreSQL test packages were discovered" >&2
+    exit 1
+  fi
+  nextest_args=("${package_args[@]}" --lib --tests)
 fi
 
 cargo nextest run \
