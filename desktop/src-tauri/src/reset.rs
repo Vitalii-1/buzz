@@ -881,11 +881,17 @@ mod tests {
         assert!(outcome.completed, "demo reset must complete");
         assert!(!app_data.exists(), "demo app data must be wiped");
         assert!(!demo_nest.exists(), "selected demo nest must be wiped");
-        assert!(!demo_config.exists(), "selected demo agent config must be wiped");
+        assert!(
+            !demo_config.exists(),
+            "selected demo agent config must be wiped"
+        );
         assert!(prod_nest.exists(), "production nest must survive");
         assert!(other_demo_nest.exists(), "another demo nest must survive");
         assert!(shared_sprout.exists(), "shared legacy state must survive");
-        assert!(shared_agent.exists(), "shared agent auth state must survive");
+        assert!(
+            shared_agent.exists(),
+            "shared agent auth state must survive"
+        );
     }
 
     #[test]

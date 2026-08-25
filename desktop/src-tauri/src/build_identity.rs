@@ -30,7 +30,8 @@ fn demo_config_home_for(
     demo_slug: Option<&str>,
     config_dir: Option<std::path::PathBuf>,
 ) -> Option<std::path::PathBuf> {
-    demo_slug.zip(config_dir)
+    demo_slug
+        .zip(config_dir)
         .map(|(slug, dir)| dir.join(format!("buzz-demo-{slug}")))
 }
 
