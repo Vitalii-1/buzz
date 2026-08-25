@@ -219,7 +219,7 @@ pub(crate) fn run_boot_reset_with_keychain(ctx: ResetContext<'_>) -> ResetOutcom
         let _ = std::fs::remove_dir_all(home.join(".sprout"));
         let _ = std::fs::remove_dir_all(home.join(".config").join("buzz-agent"));
         let link_name = crate::managed_agents::cli_link_name(ctx.is_dev);
-        let _ = std::fs::remove_file(home.join(".local").join("bin").join(link_name.as_ref()));
+        let _ = std::fs::remove_file(home.join(".local").join("bin").join(link_name));
     }
 
     // ── Step 4: keychain — LAST so we can read keys before deleting ──────────

@@ -315,7 +315,7 @@ fn ensure_skill_symlinks(_root: &Path) -> Result<(), String> {
 /// Dev builds (`is_dev = true`) use `"buzz-dev"` so that a running DMG and a
 /// concurrent dev build each own a separate link and never clobber each other —
 /// the same isolation that separates `~/.buzz` (prod) from `~/.buzz-dev` (dev).
-pub fn cli_link_name(is_dev: bool) -> std::borrow::Cow<'static, str> {
+pub fn cli_link_name(is_dev: bool) -> String {
     crate::build_identity::cli_name(is_dev)
 }
 
@@ -346,7 +346,7 @@ pub fn ensure_cli_symlink(exe_parent: &Path, is_dev: bool) -> Result<(), String>
         .join("bin");
     fs::create_dir_all(&local_bin).map_err(|e| format!("create {}: {e}", local_bin.display()))?;
 
-    let link = local_bin.join(cli_link_name(is_dev).as_ref());
+    let link = local_bin.join(cli_link_name(is_dev));
     match link.symlink_metadata() {
         Ok(meta) if meta.file_type().is_symlink() => {
             let _ = fs::remove_file(&link);

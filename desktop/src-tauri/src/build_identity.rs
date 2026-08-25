@@ -36,13 +36,13 @@ pub(crate) fn nest_name(is_dev: bool) -> Cow<'static, str> {
     }
 }
 
-pub(crate) fn cli_name(is_dev: bool) -> Cow<'static, str> {
+pub(crate) fn cli_name(is_dev: bool) -> String {
     if let Some(slug) = demo_slug() {
-        Cow::Owned(format!("buzz-demo-{slug}"))
+        format!("buzz-demo-{slug}")
     } else if is_dev {
-        Cow::Borrowed("buzz-dev")
+        "buzz-dev".to_string()
     } else {
-        Cow::Borrowed("buzz")
+        "buzz".to_string()
     }
 }
 
