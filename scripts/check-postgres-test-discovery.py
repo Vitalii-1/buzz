@@ -7,9 +7,7 @@ import re
 import sys
 from pathlib import Path
 
-IGNORE_ATTRIBUTE = re.compile(
-    r'#\s*\[\s*ignore\s*=\s*"(?P<reason>(?:\\.|[^"\\])*)"\s*\]', re.DOTALL
-)
+IGNORE_ATTRIBUTE = re.compile(r"#\s*\[\s*ignore\s*=")
 FUNCTION = re.compile(r"\b(?:async\s+)?fn\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)")
 MODULE = re.compile(r"\bmod\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{")
 EXTERNAL_INFRA = re.compile(r"\b(?:s3|minio|storage|docker|network)\b", re.IGNORECASE)
@@ -89,6 +87,56 @@ def sanitize_rust(source: str) -> str:
     return "".join(chars)
 
 
+def parse_rust_string_literal(source: str, start: int) -> tuple[str, int] | None:
+    """Parse an ordinary or raw Rust string literal at or after start."""
+    index = start
+    while index < len(source) and source[index].isspace():
+        index += 1
+
+    raw = RAW_STRING.match(source, index)
+    if raw:
+        content_start = raw.end()
+        terminator = '"' + raw.group("hashes")
+        content_end = source.find(terminator, content_start)
+        if content_end == -1:
+            return None
+        return source[content_start:content_end], content_end + len(terminator)
+
+    if index >= len(source) or source[index] != '"':
+        return None
+    index += 1
+    content = []
+    while index < len(source):
+        if source[index] == "\\":
+            if index + 1 >= len(source):
+                return None
+            content.append(source[index + 1])
+            index += 2
+        elif source[index] == '"':
+            return "".join(content), index + 1
+        else:
+            content.append(source[index])
+            index += 1
+    return None
+
+
+def ignore_attributes(source: str, sanitized: str) -> list[tuple[int, int, str]]:
+    """Return real ignore attributes and reasons, excluding comments."""
+    attributes = []
+    for match in IGNORE_ATTRIBUTE.finditer(sanitized):
+        parsed = parse_rust_string_literal(source, match.end())
+        if parsed is None:
+            continue
+        reason, literal_end = parsed
+        attribute_end = literal_end
+        while attribute_end < len(source) and source[attribute_end].isspace():
+            attribute_end += 1
+        if attribute_end >= len(source) or source[attribute_end] != "]":
+            continue
+        attributes.append((match.start(), attribute_end + 1, reason))
+    return attributes
+
+
 def module_ranges(source: str) -> list[tuple[int, int, str]]:
     sanitized = sanitize_rust(source)
     brace_pairs: dict[int, int] = {}
@@ -114,24 +162,24 @@ def integration_binary_is_postgres(path: Path) -> bool:
 
 def validate_file(path: Path) -> list[str]:
     source = path.read_text(encoding="utf-8")
+    sanitized = sanitize_rust(source)
     ranges = module_ranges(source)
     errors = []
 
-    for attribute in IGNORE_ATTRIBUTE.finditer(source):
-        reason = attribute.group("reason")
+    for attribute_start, attribute_end, reason in ignore_attributes(source, sanitized):
         reason_lower = reason.lower()
         mentions_postgres = "postgres" in reason_lower or "postgresql" in reason_lower
         mentions_redis = "redis" in reason_lower
         if not mentions_postgres and not mentions_redis:
             continue
 
-        function = FUNCTION.search(source, attribute.end())
+        function = FUNCTION.search(sanitized, attribute_end)
         if function is None:
             errors.append(f"{path}: ignored infrastructure test has no following function")
             continue
         function_name = function.group("name")
         modules = [
-            name for start, end, name in ranges if start < attribute.start() < end
+            name for start, end, name in ranges if start < attribute_start < end
         ]
         in_postgres_lane = (
             any(name.endswith("postgres_tests") for name in modules)

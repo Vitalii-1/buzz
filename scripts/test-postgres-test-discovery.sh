@@ -47,6 +47,33 @@ fi
 grep -q "silently_missed_database_test" "$fixture_root/missed.out"
 rm "$fixture_root/src/missed.rs"
 
+cat >"$fixture_root/src/raw_missed.rs" <<'RS'
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = r#"requires PostgreSQL"#]
+    fn raw_string_database_test() {}
+}
+RS
+
+if python3 "$checker" "$fixture_root" >"$fixture_root/raw-missed.out" 2>&1; then
+  echo "expected a raw-string PostgreSQL reason to fail discovery validation" >&2
+  exit 1
+fi
+grep -q "raw_string_database_test" "$fixture_root/raw-missed.out"
+rm "$fixture_root/src/raw_missed.rs"
+
+cat >"$fixture_root/src/commented.rs" <<'RS'
+#[cfg(test)]
+mod tests {
+    // #[ignore = "requires Postgres"]
+    fn ordinary_helper() {}
+}
+RS
+
+python3 "$checker" "$fixture_root"
+rm "$fixture_root/src/commented.rs"
+
 cat >"$fixture_root/src/hybrid.rs" <<'RS'
 #[cfg(test)]
 mod postgres_tests {
