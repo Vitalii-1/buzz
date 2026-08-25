@@ -281,8 +281,7 @@ export async function provisionChannelManagedAgent(
     if (reusable) {
       // Apply the caller's respondTo settings so the user's permission
       // choice in the dialog is always honored, even when reusing.
-      const needsRespondToUpdate =
-        input.respondTo && input.respondTo !== "owner-only";
+      const needsRespondToUpdate = input.respondTo !== undefined;
       const updatedAgent = needsRespondToUpdate
         ? (
             await updateManagedAgent({
@@ -319,8 +318,7 @@ export async function provisionChannelManagedAgent(
       context.channelMemberPubkeys,
     );
     if (reusable) {
-      const needsRespondToUpdate =
-        input.respondTo && input.respondTo !== "owner-only";
+      const needsRespondToUpdate = input.respondTo !== undefined;
       const updatedAgent = needsRespondToUpdate
         ? (
             await updateManagedAgent({
