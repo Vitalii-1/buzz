@@ -153,9 +153,7 @@ pub(crate) fn read_config_surface(
         .zip(effort_norm)
         .is_some_and(|(native, norm)| {
             native != LEGACY_THINKING_EFFORT_KEY
-                && record
-                    .env_vars
-                    .get(native)
+                && super::effort::get_ci(&record.env_vars, native)
                     .and_then(|v| norm.normalize_str(v))
                     .is_none()
                 && record
@@ -163,9 +161,7 @@ pub(crate) fn read_config_surface(
                     .as_deref()
                     .and_then(|v| norm.normalize_str(v))
                     .is_none()
-                && record
-                    .env_vars
-                    .get(LEGACY_THINKING_EFFORT_KEY)
+                && super::effort::get_ci(&record.env_vars, LEGACY_THINKING_EFFORT_KEY)
                     .and_then(|v| norm.normalize_str(v))
                     .is_some()
         });
@@ -173,10 +169,16 @@ pub(crate) fn read_config_surface(
         normalized_env_keys.push(LEGACY_THINKING_EFFORT_KEY);
     }
 
-    // Tier 2a: remaining env vars not covered by normalized fields.
+    // Tier 2a: remaining env vars not covered by normalized fields. Matching is
+    // ASCII-case-insensitive so a mixed-case managed key (e.g. Windows
+    // `goose_thinking_effort`) the launch projection already consumed is hidden
+    // from Advanced rather than shown as a spurious editable extra.
     let mut advanced = advanced;
     for (k, v) in &record.env_vars {
-        if normalized_env_keys.contains(&k.as_str()) {
+        if normalized_env_keys
+            .iter()
+            .any(|nk| nk.eq_ignore_ascii_case(k))
+        {
             continue;
         }
         if file_config.extra.contains_key(k) {
@@ -603,12 +605,12 @@ fn build_thinking_field(
     // Record tiers, split exactly as the projection resolves them: native env
     // strictly above the canonical column, legacy env strictly below it.
     let rec_native = thinking_env_var
-        .and_then(|k| record.env_vars.get(k))
+        .and_then(|k| super::effort::get_ci(&record.env_vars, k))
         .and_then(|v| norm(v));
     let column = record.effort_level.as_deref().and_then(&norm);
     let rec_legacy = thinking_env_var
         .filter(|k| *k != LEGACY_THINKING_EFFORT_KEY)
-        .and_then(|_| record.env_vars.get(LEGACY_THINKING_EFFORT_KEY))
+        .and_then(|_| super::effort::get_ci(&record.env_vars, LEGACY_THINKING_EFFORT_KEY))
         .and_then(|v| norm(v));
 
     // Inherited env tiers: persona resolves native-then-legacy; global and

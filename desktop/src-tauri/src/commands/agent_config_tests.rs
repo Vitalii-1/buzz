@@ -629,6 +629,58 @@ fn baked_env_mixed_keys_correct_masking() {
     assert!(token.masked);
 }
 
+/// F1 picker direct-write invariant: a stale record-native `GOOSE_THINKING_EFFORT`
+/// (launch-projection tier 1, ABOVE the canonical column) must not survive a
+/// picker write. Setting effort `high` through the picker path both writes the
+/// column and sweeps the stale alias, so the reader and the launch projection
+/// both resolve `high` — not the stale `low`. Deleting the sweep in
+/// `apply_picker_effort_level` re-breaks this: the projection would emit `low`.
+#[test]
+fn picker_write_sweeps_stale_record_native_effort_alias() {
+    let mut record = agent_record();
+    record
+        .env_vars
+        .insert("GOOSE_THINKING_EFFORT".to_string(), "low".to_string());
+
+    super::apply_picker_effort_level(&mut record, Some("high".to_string()));
+
+    // The stale record-native alias is gone; only the column carries the value.
+    assert!(
+        !record.env_vars.contains_key("GOOSE_THINKING_EFFORT"),
+        "stale record-native effort alias must be swept by the picker write"
+    );
+    assert_eq!(record.effort_level.as_deref(), Some("high"));
+
+    // Reader: the panel resolves the just-set value, not the stale alias.
+    let surface = with_no_goose_config(|| {
+        resolve_config_surface(
+            record.clone(),
+            &[],
+            Some(goose_runtime()),
+            None,
+            &Default::default(),
+            None,
+        )
+    });
+    let effort = surface
+        .normalized
+        .thinking_effort
+        .expect("picker-set effort must resolve");
+    assert_eq!(effort.value.as_deref(), Some("high"));
+
+    // Launch projection: the spawned child receives the picker value.
+    let launch = crate::managed_agents::config_bridge::effort::effort_launch_projection(
+        &record,
+        Some(goose_runtime()),
+        &[],
+        None,
+        &std::collections::BTreeMap::new(),
+        None,
+        &std::collections::BTreeMap::new(),
+    );
+    assert_eq!(launch.value.as_deref(), Some("high"));
+}
+
 #[test]
 fn baked_env_thinking_effort_is_unmasked() {
     // BUZZ_AGENT_THINKING_EFFORT is a non-secret enum — must not be masked.

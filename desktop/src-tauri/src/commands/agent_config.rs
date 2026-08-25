@@ -573,10 +573,9 @@ pub fn persist_agent_effort_level(
             "agent {pubkey} is not a local agent; remote effort is set at deploy time"
         ));
     }
-    record.effort_level = effort_level;
-    // The picker is the single record-scope effort authority. Strip every
-    // record-level effort env alias (all native keys + legacy + the sentinel)
-    // atomically with the column write: the launch projection ranks record
+    // The picker is the single record-scope effort authority. Set the canonical
+    // column and strip every record-level effort env alias (all native keys +
+    // legacy + the sentinel) atomically: the launch projection ranks record
     // native env (tier 1) ABOVE the canonical column (tier 2), so a leftover
     // `GOOSE_THINKING_EFFORT` in `record.env_vars` would silently outrank the
     // value the picker just set — the panel promises one thing, the spawn does
@@ -584,9 +583,20 @@ pub fn persist_agent_effort_level(
     // applies (`remove_record_effort_aliases`); the picker's direct-write path
     // must not skip it. Applies on clear too, so reverting to inherit drops any
     // stale record-scope alias rather than resurrecting it.
-    crate::managed_agents::remove_record_effort_aliases(&mut record.env_vars);
+    apply_picker_effort_level(record, effort_level);
     record.updated_at = crate::util::now_iso();
     save_managed_agents(&app, &records)
+}
+
+/// Atomically set the record's canonical effort column and strip every stale
+/// record-scope effort env alias. Split from the Tauri command so the invariant
+/// — no leftover alias can outrank the just-set column — is directly testable.
+pub(crate) fn apply_picker_effort_level(
+    record: &mut ManagedAgentRecord,
+    effort_level: Option<String>,
+) {
+    record.effort_level = effort_level;
+    crate::managed_agents::remove_record_effort_aliases(&mut record.env_vars);
 }
 
 #[cfg(test)]

@@ -21,18 +21,20 @@ export function envVarsWithoutKey(
   return next;
 }
 
-/** Remove `envKey` when present, case-insensitively (ASCII). */
+/** Remove every case-insensitive (ASCII) match of `envKey` when present. */
 export function envVarsWithoutKeyCaseInsensitive(
   current: EnvVarsValue,
   envKey: string,
 ): EnvVarsValue {
   const lower = envKey.toLowerCase();
-  const match = Object.keys(current).find((k) => k.toLowerCase() === lower);
-  if (match === undefined) {
+  const matches = Object.keys(current).filter((k) => k.toLowerCase() === lower);
+  if (matches.length === 0) {
     return current;
   }
   const next = { ...current };
-  delete next[match];
+  for (const match of matches) {
+    delete next[match];
+  }
   return next;
 }
 
