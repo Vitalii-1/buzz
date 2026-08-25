@@ -11,6 +11,7 @@ import { shouldClearModelForRuntimeChange } from "./personaRuntimeModel";
 import {
   envVarsClearingManagedApiKey,
   envVarsWithoutKey,
+  envVarsWithoutKeyCaseInsensitive,
 } from "./providerEnvVarUpdates";
 
 /**
@@ -71,7 +72,10 @@ export function selectionOnRuntimeChange(
   if (params.previousRuntime !== params.nextRuntime) {
     let envVars = next.envVars;
     for (const key of EFFORT_ENV_ALIASES) {
-      envVars = envVarsWithoutKey(envVars, key);
+      // Case-insensitive: Windows Command case-folds env names, so a hand-set
+      // `goose_thinking_effort` is the same variable as its canonical form and
+      // must be swept too. Mirrors the Rust `effort_suppress_keys()` sweep.
+      envVars = envVarsWithoutKeyCaseInsensitive(envVars, key);
     }
     next.envVars = envVars;
   }

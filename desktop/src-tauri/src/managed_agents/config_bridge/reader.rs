@@ -44,6 +44,7 @@ pub(crate) fn read_config_surface(
     let provider_locked = runtime_meta.is_some_and(|m| m.provider_locked);
     let thinking_env_var = runtime_meta.and_then(|m| m.thinking_env_var);
     let effort_norm = runtime_meta.and_then(|m| m.effort_normalization);
+    let effort_accepted = runtime_meta.and_then(|m| m.effort_accepted_values);
     let supports_acp_native = runtime_meta.is_some_and(|m| m.supports_acp_native_config);
     let required_fields: &[&str] = runtime_meta
         .map(|m| m.required_normalized_fields)
@@ -98,6 +99,7 @@ pub(crate) fn read_config_surface(
             effort_option.map(|o| o.config_id.as_str()),
             thinking_env_var,
             effort_norm,
+            effort_accepted,
             is_pre_spawn,
             tiers,
         ),
@@ -576,6 +578,7 @@ fn build_thinking_field(
     effort_config_id: Option<&str>,
     thinking_env_var: Option<&str>,
     effort_norm: Option<&'static EffortNormalization>,
+    effort_accepted: Option<&'static [&'static str]>,
     is_pre_spawn: bool,
     tiers: &InheritedConfigTiers,
 ) -> Option<NormalizedField> {
@@ -594,10 +597,7 @@ fn build_thinking_field(
     // (`none`→`off`, `xhigh`→`max`, case-fold) canonicalize. Contract-less
     // runtimes (buzz-agent, Claude/Codex column) pass raw.
     let norm = |raw: &str| -> Option<String> {
-        match effort_norm {
-            Some(c) => c.normalize_str(raw),
-            None => Some(raw.to_string()),
-        }
+        super::effort::normalize_effort(effort_norm, effort_accepted, raw)
     };
 
     // Record tiers, split exactly as the projection resolves them: native env
@@ -620,9 +620,18 @@ fn build_thinking_field(
         thinking_env_var.and_then(|k| effort_tier_alias(&tiers.definition_env, k, norm, false));
     let file = file_effort.as_deref().and_then(&norm);
 
-    // Live ACP value, normalized (invalid → skip as absent). The matched
-    // `config_id` is preserved for `write_via` regardless of value validity.
-    let acp_norm = acp_effort.as_deref().and_then(norm);
+    // Live ACP value: normalized through the runtime CONTRACT only, never the
+    // persisted `effort_accepted` vocabulary. The ACP running value comes from
+    // the session's own config-option namespace (e.g. buzz-agent reports
+    // `default` for its live thinking-level option) — it is a descriptive
+    // "currently running" fact, never emitted to a spawn, so the
+    // destination-vocabulary gate that guards the writable tiers must not skip
+    // it. Goose still canonicalizes (its ACP option values ARE effort values);
+    // contract-less runtimes pass raw. The matched `config_id` is preserved for
+    // `write_via` regardless of value validity.
+    let acp_norm = acp_effort
+        .as_deref()
+        .and_then(|v| super::effort::normalize_effort(effort_norm, None, v));
 
     // B same-value collapse: when NO record-level authority exists and the live
     // ACP value exactly equals what inheritance would already resolve to, drop

@@ -34,6 +34,19 @@ pub(crate) static GOOSE_EFFORT_NORMALIZATION: EffortNormalization = EffortNormal
     ],
 };
 
+/// buzz-agent's accepted persisted thinking-effort values — a validation-only
+/// contract, NOT a canonicalization one. Unlike Goose, buzz-agent keeps `xhigh`
+/// and `max` as *distinct* efforts, so these values are validated (invalid →
+/// skip as absent) but never aliased or collapsed.
+///
+/// Source of truth: `parse_thinking_effort`, `crates/buzz-agent/src/config.rs`
+/// (`none|minimal|low|medium|high|xhigh|max`). A destination-vocabulary check
+/// at projection time keeps a foreign canonical (e.g. Goose `off`) from being
+/// emitted as `BUZZ_AGENT_THINKING_EFFORT=off`, which the parser rejects at
+/// config init (child exits 2).
+pub(crate) static BUZZ_AGENT_EFFORT_VALUES: &[&str] =
+    &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+
 impl EffortNormalization {
     /// Normalize `raw` to canonical form. `None` → invalid for this harness;
     /// the caller must treat it as absent (skip-as-absent policy).
@@ -117,6 +130,18 @@ pub(crate) struct KnownAcpRuntime {
     /// projection, and the reader. No value-authority logic may live outside
     /// this struct for harnesses that declare one.
     pub effort_normalization: Option<&'static EffortNormalization>,
+    /// Accepted persisted effort values for a runtime that has NO
+    /// canonicalization contract but still constrains its vocabulary
+    /// (buzz-agent: `parse_thinking_effort`'s accepted set). Used only for
+    /// destination-vocabulary validation at projection/read time — a candidate
+    /// outside this set is skipped as absent, so a foreign canonical (e.g.
+    /// Goose `off`) is never emitted under `thinking_env_var` where the
+    /// destination parser would reject it and crash the child.
+    ///
+    /// `None` means "no validation": Goose validates through
+    /// `effort_normalization`; Claude/Codex and unknown/custom runtimes accept
+    /// any string over the `BUZZ_ACP_EFFORT_LEVEL` transport.
+    pub effort_accepted_values: Option<&'static [&'static str]>,
     /// Env var for normalizing `max_output_tokens`. `None` when the harness
     /// does not have a first-class env var for this field (config-file only).
     pub max_tokens_env_var: Option<&'static str>,

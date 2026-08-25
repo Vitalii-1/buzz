@@ -132,9 +132,12 @@ pub fn apply_agent_command_update(
 /// in [`apply_agent_command_update`], this makes the instance drop its entire
 /// per-instance effort override atomically at Save.
 pub fn remove_record_effort_aliases(env_vars: &mut std::collections::BTreeMap<String, String>) {
-    for key in crate::managed_agents::config_bridge::effort::effort_suppress_keys() {
-        env_vars.remove(key);
-    }
+    let suppress = crate::managed_agents::config_bridge::effort::effort_suppress_keys();
+    env_vars.retain(|k, _| {
+        !suppress
+            .iter()
+            .any(|suppressed| k.eq_ignore_ascii_case(suppressed))
+    });
 }
 
 /// Apply a same-request `env_vars` replacement and then enforce the pin→inherit

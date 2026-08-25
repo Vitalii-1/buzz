@@ -242,7 +242,6 @@ pub fn effective_agent_command(
 }
 
 mod overrides;
-#[cfg(test)]
 pub use overrides::remove_record_effort_aliases;
 pub use overrides::{
     apply_agent_command_update, apply_env_vars_then_effort_transition,

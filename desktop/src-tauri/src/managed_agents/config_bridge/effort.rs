@@ -34,7 +34,7 @@ use std::collections::BTreeMap;
 
 use super::LEGACY_THINKING_EFFORT_KEY;
 use crate::managed_agents::custom_harnesses::HarnessDefinition;
-use crate::managed_agents::discovery::KnownAcpRuntime;
+use crate::managed_agents::discovery::{EffortNormalization, KnownAcpRuntime};
 use crate::managed_agents::types::{AgentDefinition, ManagedAgentRecord};
 
 /// The retained ACP-startup transport key. Claude, Codex, keyless ACP adapters,
@@ -64,14 +64,33 @@ impl EffortLaunch {
     /// Apply the projection to a launch env map: strip every `suppress` key,
     /// then emit `key = value` when a value is present. After this call the map
     /// holds at most one effort key (`key`), carrying the effective value.
+    ///
+    /// Suppression is ASCII-case-insensitive: Windows `Command` case-folds env
+    /// names, so a hand-set `goose_thinking_effort` would otherwise evade an
+    /// exact-case strip and shadow the projected authority.
     pub(crate) fn apply(&self, env: &mut BTreeMap<String, String>) {
-        for k in &self.suppress {
-            env.remove(*k);
-        }
+        env.retain(|k, _| {
+            !self
+                .suppress
+                .iter()
+                .any(|suppressed| k.eq_ignore_ascii_case(suppressed))
+        });
         if let Some(ref v) = self.value {
             env.insert(self.key.to_string(), v.clone());
         }
     }
+}
+
+/// Look up `key` in `map` case-insensitively (ASCII). Prefers an exact match,
+/// then falls back to the first case-insensitive match. Effort key resolution
+/// must match Windows `Command` env semantics, where a mixed-case native key
+/// is the same variable as its canonical form.
+fn get_ci<'a>(map: &'a BTreeMap<String, String>, key: &str) -> Option<&'a String> {
+    map.get(key).or_else(|| {
+        map.iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+            .map(|(_, v)| v)
+    })
 }
 
 /// Resolve the single harness-agnostic effort authority and apply it to a fully
@@ -117,19 +136,49 @@ pub(crate) fn effort_tier_alias(
     norm: impl Fn(&str) -> Option<String>,
     allow_legacy_alias: bool,
 ) -> Option<String> {
-    if let Some(raw) = map.get(native_key) {
+    if let Some(raw) = get_ci(map, native_key) {
         if let Some(canonical) = norm(raw) {
             return Some(canonical);
         }
     }
     if allow_legacy_alias && native_key != LEGACY_THINKING_EFFORT_KEY {
-        if let Some(raw) = map.get(LEGACY_THINKING_EFFORT_KEY) {
+        if let Some(raw) = get_ci(map, LEGACY_THINKING_EFFORT_KEY) {
             if let Some(canonical) = norm(raw) {
                 return Some(canonical);
             }
         }
     }
     None
+}
+
+/// Normalize/validate an effort candidate for a runtime's destination
+/// vocabulary. The single value gate shared by the launch projection and the
+/// reader, so the panel and the next spawn never disagree on a value's validity.
+///
+/// - `contract` present (Goose): canonicalize through the alias table; invalid
+///   → `None` (skip as absent).
+/// - `contract` absent but `accepted` present (buzz-agent): validation-only —
+///   accept a value case-insensitively iff the destination parser would
+///   (`parse_thinking_effort`), emit it lowercased; a foreign canonical (e.g.
+///   Goose `off`) is rejected so it is never emitted as
+///   `BUZZ_AGENT_THINKING_EFFORT=off`, which crashes the child at config init.
+/// - both absent (Claude/Codex, unknown/custom): raw passthrough — the value
+///   rides `BUZZ_ACP_EFFORT_LEVEL` to an adapter that accepts any string.
+pub(crate) fn normalize_effort(
+    contract: Option<&EffortNormalization>,
+    accepted: Option<&[&str]>,
+    raw: &str,
+) -> Option<String> {
+    match contract {
+        Some(c) => c.normalize_str(raw),
+        None => match accepted {
+            Some(values) => {
+                let lower = raw.trim().to_ascii_lowercase();
+                values.iter().any(|v| *v == lower).then_some(lower)
+            }
+            None => Some(raw.to_string()),
+        },
+    }
 }
 
 /// The destination env key the effective effort is emitted under for `runtime`:
@@ -172,17 +221,29 @@ pub(crate) fn effort_launch_projection(
     baked_env: &BTreeMap<String, String>,
 ) -> EffortLaunch {
     let key = effort_dest_key(runtime);
-    let suppress = effort_suppress_keys();
 
-    // Normalizer: contract runtimes canonicalize (invalid → skip); contract-less
-    // runtimes pass raw (any present value is valid for their per-model catalog).
-    let contract = runtime.and_then(|r| r.effort_normalization);
-    let norm = |raw: &str| -> Option<String> {
-        match contract {
-            Some(c) => c.normalize_str(raw),
-            None => Some(raw.to_string()),
-        }
+    // Fix (external review #2): unknown/custom runtimes restore main's
+    // pass-through. With no runtime metadata there is no vocabulary to bridge
+    // and no known env-tier authority, so suppressing every effort key would
+    // silently strip a working custom-wrapper key (e.g. `GOOSE_THINKING_EFFORT`
+    // on a hand-rolled Goose adapter). An empty suppress set leaves user and
+    // definition effort env untouched; the raw canonical column still emits
+    // under `BUZZ_ACP_EFFORT_LEVEL` (the retained compatibility path), matching
+    // main. KNOWN runtimes — including Claude/Codex with `thinking_env_var:
+    // None` — keep the full sweep + single-key emission.
+    let suppress = if runtime.is_some() {
+        effort_suppress_keys()
+    } else {
+        Vec::new()
     };
+
+    // Value gate: Goose canonicalizes through its alias contract; buzz-agent
+    // validates against its accepted set (invalid → skip, so a foreign
+    // canonical like Goose `off` is never emitted where the destination parser
+    // rejects it); Claude/Codex and unknown/custom pass raw over the sentinel.
+    let contract = runtime.and_then(|r| r.effort_normalization);
+    let accepted = runtime.and_then(|r| r.effort_accepted_values);
+    let norm = |raw: &str| -> Option<String> { normalize_effort(contract, accepted, raw) };
 
     // Tier-reading native key: the runtime's REAL native key. `None` (Claude,
     // Codex, unknown/custom) means there are no env-tier authorities — the
@@ -227,7 +288,7 @@ fn resolve_effective_effort(
 
     // 1. record native — only for runtimes with a real native key.
     if let Some(nk) = native_key {
-        if let Some(raw) = record_env.get(nk) {
+        if let Some(raw) = get_ci(&record_env, nk) {
             if let Some(v) = norm(raw) {
                 return Some(v);
             }
@@ -242,7 +303,7 @@ fn resolve_effective_effort(
     // 3. record legacy alias — only when the native key differs from it.
     if let Some(nk) = native_key {
         if nk != LEGACY_THINKING_EFFORT_KEY {
-            if let Some(raw) = record_env.get(LEGACY_THINKING_EFFORT_KEY) {
+            if let Some(raw) = get_ci(&record_env, LEGACY_THINKING_EFFORT_KEY) {
                 if let Some(v) = norm(raw) {
                     return Some(v);
                 }
@@ -275,7 +336,7 @@ fn resolve_effective_effort(
         }
     }
     // 7. baked build floor (native only).
-    if let Some(raw) = baked_env.get(nk) {
+    if let Some(raw) = get_ci(baked_env, nk) {
         if let Some(v) = norm(raw) {
             return Some(v);
         }

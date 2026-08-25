@@ -467,3 +467,162 @@ fn buzz_agent_generic_column_does_not_leak_acp_sentinel() {
         Some("medium")
     );
 }
+
+// --------------------------------------------------------------------------
+// External review fix #2 — unknown/custom runtimes restore main's pass-through
+// --------------------------------------------------------------------------
+
+#[test]
+fn unknown_runtime_does_not_suppress_user_effort_env() {
+    // Regression: a custom wrapper with GOOSE_THINKING_EFFORT=high in record env
+    // must receive it unchanged. On main an unset column left env untouched;
+    // the projection must not strip effort keys for a runtime it has no
+    // metadata for (empty suppress set = pass-through).
+    let mut r = record();
+    r.env_vars = env(&[(GOOSE_KEY, "high"), ("UNRELATED", "keep")]);
+    let launch = project_record_only(&r, None);
+    assert!(
+        launch.suppress.is_empty(),
+        "unknown runtime suppresses nothing"
+    );
+
+    let mut launch_env = r.env_vars.clone();
+    launch.apply(&mut launch_env);
+    assert_eq!(
+        launch_env.get(GOOSE_KEY).map(String::as_str),
+        Some("high"),
+        "custom-wrapper effort key survives an unknown-runtime launch"
+    );
+    assert_eq!(
+        launch_env.get("UNRELATED").map(String::as_str),
+        Some("keep")
+    );
+}
+
+#[test]
+fn unknown_runtime_keeps_user_acp_sentinel_when_no_column() {
+    // A custom adapter with a hand-set BUZZ_ACP_EFFORT_LEVEL and no canonical
+    // column keeps its sentinel — nothing to project, nothing suppressed.
+    let mut r = record();
+    r.env_vars = env(&[(ACP_KEY, "low")]);
+    let launch = project_record_only(&r, None);
+    // No column → no projected value → nothing emitted, nothing stripped.
+    assert_eq!(launch.value, None);
+    let mut launch_env = r.env_vars.clone();
+    launch.apply(&mut launch_env);
+    assert_eq!(
+        launch_env.get(ACP_KEY).map(String::as_str),
+        Some("low"),
+        "hand-set sentinel survives on an unknown runtime with no column"
+    );
+}
+
+#[test]
+fn unknown_runtime_column_still_emits_under_acp_sentinel() {
+    // The retained compatibility emission: an unknown runtime with a canonical
+    // column emits it raw under the ACP sentinel (matches the PR-body decision).
+    let mut r = record();
+    r.effort_level = Some("high".into());
+    let launch = project_record_only(&r, None);
+    assert_eq!(launch.value.as_deref(), Some("high"));
+    assert_eq!(launch.key, ACP_KEY);
+}
+
+// --------------------------------------------------------------------------
+// External review fix #3 — destination-vocabulary validation at projection
+// --------------------------------------------------------------------------
+
+#[test]
+fn goose_off_column_skips_for_buzz_agent_destination() {
+    // Regression: canonical column `off` is valid Goose but NOT a buzz-agent
+    // effort. Switching a record with effort_level=off to buzz-agent must NOT
+    // emit BUZZ_AGENT_THINKING_EFFORT=off — parse_thinking_effort rejects it and
+    // the child exits 2. Invalid → skip as absent → no key emitted.
+    let mut r = record();
+    r.effort_level = Some("off".into());
+    let launch = project_record_only(&r, Some(buzz_agent()));
+    assert_eq!(
+        launch.value, None,
+        "foreign canonical `off` skipped for buzz-agent's vocabulary"
+    );
+
+    let mut launch_env = BTreeMap::new();
+    launch.apply(&mut launch_env);
+    assert_eq!(
+        launch_env.get(BUZZ_AGENT_KEY),
+        None,
+        "no effort key emitted when the value is outside the destination vocabulary"
+    );
+}
+
+#[test]
+fn buzz_agent_minimal_column_skips_for_goose_destination() {
+    // The reverse: `minimal` is a valid buzz-agent effort but invalid Goose, so
+    // switching to Goose skips it as absent (already covered by normalization,
+    // pinned here as the symmetric vocabulary case).
+    let mut r = record();
+    r.effort_level = Some("minimal".into());
+    let launch = project_record_only(&r, Some(goose()));
+    assert_eq!(launch.value, None);
+}
+
+#[test]
+fn buzz_agent_accepts_its_own_distinct_efforts() {
+    // buzz-agent keeps xhigh and max distinct (no Goose-style xhigh→max
+    // collapse): both are valid and pass through unchanged.
+    for v in ["xhigh", "max", "none", "minimal"] {
+        let mut r = record();
+        r.effort_level = Some(v.into());
+        let launch = project_record_only(&r, Some(buzz_agent()));
+        assert_eq!(
+            launch.value.as_deref(),
+            Some(v),
+            "buzz-agent accepts `{v}` verbatim (no alias collapse)"
+        );
+    }
+}
+
+// --------------------------------------------------------------------------
+// External review fix #4 — case-insensitive suppression / lookup
+// --------------------------------------------------------------------------
+
+#[test]
+fn mixed_case_native_key_is_read_and_wins() {
+    // Windows Command case-folds env names, so `goose_thinking_effort` is the
+    // same variable as the canonical form. The tier reader must find it.
+    let mut r = record();
+    r.env_vars = env(&[("goose_thinking_effort", "low")]);
+    r.effort_level = Some("high".into());
+    let launch = project_record_only(&r, Some(goose()));
+    assert_eq!(
+        launch.value.as_deref(),
+        Some("low"),
+        "mixed-case record-native key is read and outranks the column"
+    );
+}
+
+#[test]
+fn apply_strips_mixed_case_effort_keys() {
+    // A hand-set mixed-case foreign effort key must be swept, not left to
+    // shadow the projected value once Windows case-folds it at spawn.
+    let mut r = record();
+    r.effort_level = Some("high".into());
+    let launch = project_record_only(&r, Some(goose()));
+
+    let mut launch_env = env(&[
+        ("Goose_Thinking_Effort", "stale"),
+        ("buzz_acp_effort_level", "stale"),
+        ("UNRELATED", "keep"),
+    ]);
+    launch.apply(&mut launch_env);
+
+    // Only the canonical projected key remains; both mixed-case foreign keys
+    // are gone.
+    assert_eq!(launch_env.get(GOOSE_KEY).map(String::as_str), Some("high"));
+    assert_eq!(launch_env.get("Goose_Thinking_Effort"), None);
+    assert_eq!(launch_env.get("buzz_acp_effort_level"), None);
+    assert_eq!(
+        launch_env.get("UNRELATED").map(String::as_str),
+        Some("keep")
+    );
+}

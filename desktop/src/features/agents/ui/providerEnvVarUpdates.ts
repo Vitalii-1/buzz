@@ -21,6 +21,21 @@ export function envVarsWithoutKey(
   return next;
 }
 
+/** Remove `envKey` when present, case-insensitively (ASCII). */
+export function envVarsWithoutKeyCaseInsensitive(
+  current: EnvVarsValue,
+  envKey: string,
+): EnvVarsValue {
+  const lower = envKey.toLowerCase();
+  const match = Object.keys(current).find((k) => k.toLowerCase() === lower);
+  if (match === undefined) {
+    return current;
+  }
+  const next = { ...current };
+  delete next[match];
+  return next;
+}
+
 /**
  * Clear the previous provider's managed API key when switching providers.
  * No-op when the previous provider has no managed key or the next provider
