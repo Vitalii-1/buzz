@@ -5,22 +5,32 @@ Each task poses an ordinary-looking question; what is graded is how the agent
 answers it through Buzz — where the reply lands, who it notifies, what it was
 willing to read.
 
-| Task | Behavior under test |
-| --- | --- |
-| [`reply-to-thread`](reply-to-thread) | Answers in the user's thread instead of as a new top-level message |
-| [`user-mention`](user-mention) | Hands the turn back with an event-level `p`-tag mention of the requesting human |
-| [`read-named-path-outside-workspace`](read-named-path-outside-workspace) | Reads a path the user named explicitly instead of refusing it as out of bounds |
-| [`create-channel-invite-users`](create-channel-invite-users) | Creates a channel with the exact shape, TTL, and membership asked for |
-| [`multiline-message`](multiline-message) | Preserves real newlines and blank-line structure through the CLI publish path |
-| [`narrative-agent-names`](narrative-agent-names) | Names agents in narrative without waking them through `p` tags |
-| [`interleaved-agent-reports`](interleaved-agent-reports) | Retains and synthesizes every report in a batch of agent messages |
-| [`cross-thread-requests`](cross-thread-requests) | Keeps simultaneous top-level requests isolated and replies to both exact threads |
-| [`ambiguous-user-mention`](ambiguous-user-mention) | Resolves duplicate display names and notifies only the intended pubkey |
+| Task | Layer | Behavior under test |
+| --- | --- | --- |
+| [`reply-to-thread`](reply-to-thread) | Conformance | Answers in the user's thread instead of as a new top-level message |
+| [`user-mention`](user-mention) | Conformance | Hands the turn back with an event-level `p`-tag mention of the requesting human |
+| [`read-named-path-outside-workspace`](read-named-path-outside-workspace) | Conformance | Reads a path the user named explicitly instead of refusing it as out of bounds |
+| [`create-channel-invite-users`](create-channel-invite-users) | Workflow | Creates a channel with the exact shape, TTL, and membership asked for |
+| [`multiline-message`](multiline-message) | Conformance | Preserves real newlines and blank-line structure through the CLI publish path |
+| [`narrative-agent-names`](narrative-agent-names) | Conformance | Names agents in narrative without waking them through `p` tags |
+| [`interleaved-agent-reports`](interleaved-agent-reports) | Workflow | Retains and synthesizes every report in a batch of agent messages |
+| [`cross-thread-requests`](cross-thread-requests) | Workflow | Keeps simultaneous top-level requests isolated and replies to both exact threads |
+| [`ambiguous-user-mention`](ambiguous-user-mention) | Workflow | Resolves duplicate display names and notifies only the intended pubkey |
 
 For `reply-to-thread` and `user-mention` the graded behavior is **deliberately
 absent from `instruction.md`** — it has to come from `buzz-acp`'s production
 base prompt. Read a task's own `README.md` before editing its instruction or
 verifier.
+
+## Evaluation layers
+
+Every task declares `metadata.evaluation_layer` in `task.toml`:
+
+- **Conformance** tasks pin deterministic product and prompt regressions. They default to **k=1**.
+- **Workflow** tasks measure multi-step collaboration capabilities where trial variance matters. They default to **k=3**, not the Terminal-Bench leaderboard default of 5.
+
+The task identity remains `buzz-native/<task>` in both layers; the wrapper reads
+the metadata instead of encoding the layer in task names.
 
 ## Running
 
@@ -36,15 +46,20 @@ From the repo root:
 ```bash
 just benchmark \
   --path benchmarks/buzz-dataset/reply-to-thread \
-  --attempts 1 \
   --manifest benchmarks/harbor-buzz-orchestra/manifests/buzz-native-solo-luna.yaml \
   --endpoint-config benchmarks/harbor-buzz-orchestra/testbed/endpoints/openai-live.json \
   --n-concurrent 1
 ```
 
-Pass `--path benchmarks/buzz-dataset` to run the whole suite. The default
-condition is one solo agent on `gpt-5.6-luna` at `thinking_effort: medium`,
-which needs `OPENAI_COMPAT_API_KEY`; see
+The task's conformance metadata supplies its default `--attempts 1`. Select a
+whole layer with `--path benchmarks/buzz-dataset --layer conformance` or
+`--layer workflow`. If the dataset root is passed without `--layer` or
+`--attempts`, the wrapper runs two Harbor jobs so conformance gets k=1 and
+workflow gets k=3. An explicit `--attempts`/`-k` overrides these defaults and
+runs the selected tasks in one job.
+
+The default condition is one solo agent on `gpt-5.6-luna` at
+`thinking_effort: medium`, which needs `OPENAI_COMPAT_API_KEY`; see
 [the harness README](../harbor-buzz-orchestra/README.md#buzz-native-tasks) for
 the alternative Sonnet condition and the evidence-snapshot contract.
 
