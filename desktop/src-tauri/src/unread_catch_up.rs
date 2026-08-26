@@ -27,7 +27,7 @@ mod page_fetch;
 use page_fetch::{apply_page_cursor, fetch_filter_pages, query_page, QueryPacer};
 
 mod relevant_threads;
-use relevant_threads::fetch_relevant_thread_events;
+use relevant_threads::{fetch_broadcast_thread_events, fetch_relevant_thread_events};
 
 const CATCH_UP_LIMIT: usize = 1_000;
 const ACTIVITY_LIMIT: usize = 100;
@@ -387,11 +387,19 @@ pub(crate) async fn unread_catch_up(
         &query_pacer,
     )
     .await;
+    // Broadcast replies are globally notifying even when their thread is not
+    // part of the user's retained membership. Recover them independently over
+    // the same bounded unread horizon as relevant-thread catch-up.
+    let mut broadcast =
+        fetch_broadcast_thread_events(&state, &api_base, &keys, &discovery_channels, &query_pacer)
+            .await;
     discovery.retain(|(channel, _, _)| {
-        let Some(error) = relevant
+        let channel_id = channel.id.to_ascii_lowercase();
+        let error = relevant
             .errors_by_channel
-            .remove(&channel.id.to_ascii_lowercase())
-        else {
+            .remove(&channel_id)
+            .or_else(|| broadcast.errors_by_channel.remove(&channel_id));
+        let Some(error) = error else {
             return true;
         };
         failures.push(ChannelResult::Error {
@@ -423,6 +431,12 @@ pub(crate) async fn unread_catch_up(
                 events.extend(top_level);
                 events.extend(
                     relevant
+                        .by_channel
+                        .remove(&channel.id.to_ascii_lowercase())
+                        .unwrap_or_default(),
+                );
+                events.extend(
+                    broadcast
                         .by_channel
                         .remove(&channel.id.to_ascii_lowercase())
                         .unwrap_or_default(),

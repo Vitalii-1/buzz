@@ -50,6 +50,30 @@ fn relevant_thread_filter_at(
     })
 }
 
+fn broadcast_thread_filter_at(channels: &[CatchUpChannel], now: u64) -> serde_json::Value {
+    let since = channels
+        .iter()
+        .map(|channel| relevant_thread_since_at(channel, now))
+        .min()
+        .unwrap_or_else(|| now.saturating_sub(HORIZON_SECONDS as u64));
+    let channel_type = if channels.iter().any(|channel| channel.channel_type == "dm") {
+        "dm"
+    } else {
+        "stream"
+    };
+    let channel_ids = channels
+        .iter()
+        .map(|channel| channel.id.as_str())
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "kinds": catch_up_kinds(channel_type),
+        "#h": channel_ids,
+        "#broadcast": ["1"],
+        "since": since,
+        "limit": super::CATCH_UP_LIMIT,
+    })
+}
+
 fn relevant_thread_since_at(channel: &CatchUpChannel, now: u64) -> u64 {
     let retention_cutoff = now.saturating_sub(HORIZON_SECONDS as u64);
     channel
@@ -84,6 +108,17 @@ fn relevant_thread_queries_at(
         }
     }
     queries
+}
+
+fn broadcast_thread_queries(channels: &[CatchUpChannel]) -> Vec<RelevantThreadQuery> {
+    let now = chrono::Utc::now().timestamp().max(0) as u64;
+    channels
+        .chunks(CHANNEL_FILTER_CHUNK)
+        .map(|channel_chunk| RelevantThreadQuery {
+            channels: channel_chunk.to_vec(),
+            filter: broadcast_thread_filter_at(channel_chunk, now),
+        })
+        .collect()
 }
 
 fn event_channel_id(event: &Event) -> Option<&str> {
@@ -134,6 +169,53 @@ pub(super) async fn fetch_relevant_thread_events(
         };
     }
     let pages = stream::iter(relevant_thread_queries(channels, roots))
+        .map(|query| async move {
+            let result = fetch_filter_pages(state, api_base, keys, &query.filter, pacer).await;
+            (query.channels, result)
+        })
+        .buffered(CHANNEL_FETCH_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await;
+    let mut events = Vec::new();
+    let mut errors_by_channel = HashMap::new();
+    for (query_channels, page) in pages {
+        match page {
+            Ok(page) => events.extend(page),
+            Err(error) => {
+                for channel in query_channels {
+                    errors_by_channel
+                        .entry(channel.id.to_ascii_lowercase())
+                        .or_insert_with(|| error.clone());
+                }
+            }
+        }
+    }
+    let mut seen = HashSet::new();
+    events.retain(|event| seen.insert(event.id));
+    let mut by_channel = bucket_requested_events(events, channels);
+    for channel_id in errors_by_channel.keys() {
+        by_channel.remove(channel_id);
+    }
+    RelevantThreadEvents {
+        by_channel,
+        errors_by_channel,
+    }
+}
+
+pub(super) async fn fetch_broadcast_thread_events(
+    state: &AppState,
+    api_base: &str,
+    keys: &Keys,
+    channels: &[CatchUpChannel],
+    pacer: &QueryPacer,
+) -> RelevantThreadEvents {
+    if channels.is_empty() {
+        return RelevantThreadEvents {
+            by_channel: HashMap::new(),
+            errors_by_channel: HashMap::new(),
+        };
+    }
+    let pages = stream::iter(broadcast_thread_queries(channels))
         .map(|query| async move {
             let result = fetch_filter_pages(state, api_base, keys, &query.filter, pacer).await;
             (query.channels, result)
@@ -244,5 +326,21 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(relevant_thread_queries(&channels, &roots).len(), 5);
+    }
+
+    #[test]
+    fn broadcast_queries_cover_unrelated_threads_with_a_bounded_window() {
+        let now = HORIZON_SECONDS as u64 + 1_000;
+        let channels = vec![
+            channel("old", "stream", None),
+            channel("current", "stream", Some(now - 100)),
+        ];
+
+        let filter = broadcast_thread_filter_at(&channels, now);
+
+        assert_eq!(filter["#broadcast"], serde_json::json!(["1"]));
+        assert_eq!(filter["#h"], serde_json::json!(["old", "current"]));
+        assert_eq!(filter["since"], now - HORIZON_SECONDS as u64);
+        assert!(filter.get("#e").is_none());
     }
 }

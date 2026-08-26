@@ -853,6 +853,85 @@ test("catch-up advances discovery only after discovered membership is durable", 
   }
 });
 
+test("channel-list changes release a catch-up claim while membership persistence is pending", async () => {
+  installFreshStorage();
+  const PUBKEY = "pk-catch-up-channel-change";
+  const FIRST = { id: "channel-first", name: "first", channelType: "stream" };
+  const SECOND = {
+    id: "channel-second",
+    name: "second",
+    channelType: "stream",
+  };
+  const requests = [];
+  let harness;
+  let releaseMembership;
+  let signalMembershipStarted;
+  const membershipStarted = new Promise((resolve) => {
+    signalMembershipStarted = resolve;
+  });
+  const membershipGate = new Promise((resolve) => {
+    releaseMembership = resolve;
+  });
+  let blockedFirstMembership = false;
+  const rig = installNativeRig({
+    catchUpChannels: (request) => {
+      requests.push(request);
+      return request.channels.map((channel) => ({
+        status: "success",
+        channelId: channel.id,
+        observedEvents: [],
+        maxTrigger: 0,
+        discoveryThrough: NOW_S - 1,
+        activityRows: [],
+        discovered: {
+          participated: [`root-${channel.id}`],
+          authored: [],
+          mentioned: [],
+        },
+      }));
+    },
+  });
+  const invoke = globalThis.window.__TAURI_INTERNALS__.invoke;
+  globalThis.window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+    if (
+      command === "observed_unread_ingest" &&
+      args.request.membership.length > 0 &&
+      !blockedFirstMembership
+    ) {
+      blockedFirstMembership = true;
+      signalMembershipStarted();
+      await membershipGate;
+    }
+    return invoke(command, args);
+  };
+
+  try {
+    harness = await mountUnreadChannels({
+      pubkey: PUBKEY,
+      relay: RELAY,
+      channels: [FIRST],
+      relayClient: makeStubRelayClient(),
+    });
+    await act(async () => membershipStarted);
+
+    await harness.render(PUBKEY, [FIRST, SECOND]);
+    releaseMembership();
+    for (let index = 0; index < 10 && requests.length < 2; index += 1) {
+      await settle();
+    }
+
+    assert.deepEqual(
+      requests[1].channels.map((channel) => channel.id).sort(),
+      [FIRST.id, SECOND.id],
+      "cleanup must release the in-flight first channel so the replacement effect retries it",
+    );
+  } finally {
+    releaseMembership?.();
+    await harness?.unmount();
+    rig.restore();
+  }
+});
+
 // ── D3: an empty seed must not wipe accumulated native membership ────────────
 
 test("D3: reopening with an empty membership seed preserves discovered membership", async () => {

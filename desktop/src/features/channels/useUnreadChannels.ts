@@ -645,8 +645,8 @@ export function useUnreadChannels(
         const allThreadReplies: ThreadActivityItem[] = [];
         const failedIds: string[] = [];
         for (const result of results) {
-          pendingIds.delete(result.channelId);
           if (result.status === "error") {
+            pendingIds.delete(result.channelId);
             caughtUpChannelsRef.current.delete(result.channelId);
             failedIds.push(result.channelId);
             continue;
@@ -687,6 +687,9 @@ export function useUnreadChannels(
               didAdvance = true;
             }
           }
+          // Keep the claim pending across every awaited/application step so
+          // effect cleanup can release it if the channel set changes midway.
+          pendingIds.delete(result.channelId);
         }
         for (const channelId of pendingIds) {
           caughtUpChannelsRef.current.delete(channelId);
