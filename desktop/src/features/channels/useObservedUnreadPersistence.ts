@@ -243,7 +243,30 @@ export function useObservedUnreadPersistence(
           membership: [],
           clearChannels: [],
           clearAll: false,
-        }).then(apply);
+        }).then((response) => {
+          if (response.kind === "snapshotRequired") {
+            throw new Error(
+              "native observed-unread mutation requires snapshot",
+            );
+          }
+          apply(response);
+          // Keep newly observed events visible while the native mutation is in
+          // flight. Without this optimistic mirror, a passive channel-open can
+          // advance the timeline marker during the coalescing/IPC window and
+          // briefly erase the sidebar dot before the authoritative projection
+          // arrives. Once native acknowledges the batch, its projection owns
+          // the rows and the temporary renderer entries can be discarded.
+          for (const { event } of queued) {
+            const channelEvents = observedUnreadEventsByChannelRef.current.get(
+              event.channelId,
+            );
+            channelEvents?.delete(event.id);
+            if (channelEvents?.size === 0) {
+              observedUnreadEventsByChannelRef.current.delete(event.channelId);
+            }
+          }
+          optionsRef.current.onPruned?.();
+        });
       })
       .catch(() => {
         // Native can fail after a scope switch. Preserve the failed scope's
@@ -581,10 +604,17 @@ export function useObservedUnreadPersistence(
     }
   }, [readStateVersion, isReadStateReady]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the mutable event ref is a stable storage container
   const schedule = React.useCallback(
     (scope: string, channelId?: string, event?: ObservedUnreadEvent) => {
       if (scopeLoadedRef.current !== scope) return;
       if (nativeRef.current && channelId && event) {
+        recordObservedUnreadEvent(
+          observedUnreadEventsByChannelRef.current,
+          channelId,
+          event,
+          1_000,
+        );
         queueRef.current.push({ scope, event: { channelId, ...event } });
         if (timerRef.current !== null) clearTimeout(timerRef.current);
         timerRef.current = setTimeout(() => {

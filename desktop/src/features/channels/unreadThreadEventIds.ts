@@ -34,18 +34,10 @@ export function collectUnreadThreadEventIds(
 export function readAtForPreservedUnreadMessage(
   messageId: string,
   preservedUnreadMessageIds: ReadonlySet<string>,
-  preservedUnreadMessageIdsOnFirstOpen: ReadonlySet<string>,
-  createdAt: number | undefined,
-  openFrontierSeconds: number | null,
   messageReadAt: number | null,
   channelReadAt: number | null,
 ): number | null {
-  if (
-    preservedUnreadMessageIds.has(messageId) &&
-    (preservedUnreadMessageIdsOnFirstOpen.has(messageId) ||
-      (createdAt !== undefined &&
-        (openFrontierSeconds === null || createdAt > openFrontierSeconds)))
-  ) {
+  if (preservedUnreadMessageIds.has(messageId)) {
     return messageReadAt;
   }
   return maxReadAt(messageReadAt, channelReadAt);

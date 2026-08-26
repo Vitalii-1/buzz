@@ -19,49 +19,25 @@ test("mark-all includes authoritative replies hidden for the active channel", ()
   );
 });
 
-test("authoritative unread id present on first open survives a newer revisit frontier", () => {
+test("authoritative unread id survives a newer revisit frontier", () => {
   const messageId = "reply";
   assert.equal(
-    readAtForPreservedUnreadMessage(
-      messageId,
-      new Set([messageId]),
-      new Set([messageId]),
-      100,
-      500,
-      null,
-      500,
-    ),
+    readAtForPreservedUnreadMessage(messageId, new Set([messageId]), null, 500),
     null,
   );
 });
 
 test("non-preserved message still folds the channel frontier", () => {
   assert.equal(
-    readAtForPreservedUnreadMessage(
-      "reply",
-      new Set(),
-      new Set(),
-      100,
-      500,
-      100,
-      500,
-    ),
+    readAtForPreservedUnreadMessage("reply", new Set(), 100, 500),
     500,
   );
 });
 
-test("late old projection does not revive history after the channel opens", () => {
+test("late authoritative recovery remains unread after the channel opens", () => {
   const messageId = "reply";
   assert.equal(
-    readAtForPreservedUnreadMessage(
-      messageId,
-      new Set([messageId]),
-      new Set(),
-      100,
-      500,
-      null,
-      500,
-    ),
-    500,
+    readAtForPreservedUnreadMessage(messageId, new Set([messageId]), null, 500),
+    null,
   );
 });

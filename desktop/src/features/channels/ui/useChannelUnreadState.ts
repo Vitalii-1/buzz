@@ -28,8 +28,6 @@ import { readAtForPreservedUnreadMessage } from "@/features/channels/unreadThrea
 
 import { useWelcomeInitialUnreadSuppression } from "./useWelcomeInitialUnreadSuppression";
 
-const EMPTY_SET = new Set<string>();
-
 type UseChannelUnreadStateOptions = {
   activeChannelId: string | null;
   timelineMessages: TimelineMessage[];
@@ -97,26 +95,6 @@ export function useChannelUnreadState({
   const openFrontierSeconds = activeChannelId
     ? (openFrontierRef.current.get(activeChannelId) ?? null)
     : null;
-  // IDs already authoritative when this channel first opens are trusted across
-  // later visits even if a newer channel-timeline marker overtakes them. Keep
-  // this session snapshot across channel leave/revisit; IDs that appear later
-  // still use the timestamp guard below, preventing an in-flight projection
-  // refresh from reviving old history while the channel is already open.
-  const preservedUnreadOnFirstOpenRef = React.useRef(
-    new Map<string, ReadonlySet<string>>(),
-  );
-  if (
-    activeChannelId &&
-    !preservedUnreadOnFirstOpenRef.current.has(activeChannelId)
-  ) {
-    preservedUnreadOnFirstOpenRef.current.set(
-      activeChannelId,
-      new Set(preservedUnreadMessageIds),
-    );
-  }
-  const preservedUnreadMessageIdsOnFirstOpen = activeChannelId
-    ? (preservedUnreadOnFirstOpenRef.current.get(activeChannelId) ?? EMPTY_SET)
-    : EMPTY_SET;
   // Channels the user manually marked unread this session. A deliberate
   // mark-unread has no meaningful "new" boundary inside the timeline — the
   // open-time snapshot already covers every message — so the pill and divider
@@ -203,29 +181,23 @@ export function useChannelUnreadState({
   // older than the frontier but never expanded, so it has no msg:<id> marker —
   // re-lights the collapsed in-panel branch badge. Folding the browse frontier
   // reads those browsed-past replies. The observed-unread projection is
-  // authoritative positive evidence for preservation, including replies older
-  // than a later channel-timeline frontier after a revisit. Matching message
-  // ids keep their bare/message frontier so the sidebar dot, timeline badge,
-  // and hover action stay coherent.
+  // authoritative positive evidence for preservation, including IDs recovered
+  // by native hydration or catch-up after the channel has already opened.
+  // Matching message ids keep their bare/message frontier so passive browsing
+  // cannot overtake activity that still requires an explicit clear.
   const getActiveMessageReadAt = React.useCallback(
     (messageId: string) =>
       readAtForPreservedUnreadMessage(
         messageId,
         preservedUnreadMessageIds,
-        preservedUnreadMessageIdsOnFirstOpen,
-        createdAtByMessageId.get(messageId),
-        openFrontierSeconds,
         getMessageReadAt(messageId),
         activeChannelId ? getChannelReadAt(activeChannelId) : null,
       ),
     [
       activeChannelId,
-      createdAtByMessageId,
       getChannelReadAt,
       getMessageReadAt,
-      openFrontierSeconds,
       preservedUnreadMessageIds,
-      preservedUnreadMessageIdsOnFirstOpen,
     ],
   );
   const threadPanelIndex = React.useMemo(

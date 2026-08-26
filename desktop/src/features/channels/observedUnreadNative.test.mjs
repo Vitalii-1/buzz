@@ -101,6 +101,72 @@ test("marker advances queued before native readiness are ingested after open", a
   }
 });
 
+test("native: queued thread activity stays projected until native acknowledges it", async () => {
+  installFreshStorage();
+  const refs = makeRefs();
+  let harness;
+  let releaseIngest;
+  const ingestGate = new Promise((resolve) => {
+    releaseIngest = resolve;
+  });
+  const rig = installNativeRig();
+  const invoke = globalThis.window.__TAURI_INTERNALS__.invoke;
+  globalThis.window.__TAURI_INTERNALS__.invoke = async (command, args) => {
+    if (command === "observed_unread_ingest") await ingestGate;
+    return invoke(command, args);
+  };
+
+  try {
+    harness = await mountHook(
+      { ...DEFAULT_PROPS, pubkey: "pk-pending-thread" },
+      refs,
+    );
+    await settle();
+
+    const event = makeObservedEvent({
+      id: "pending-thread-event",
+      createdAt: NOW_S,
+      rootId: "pending-thread-root",
+    });
+    harness.api.schedule(
+      harness.api.currentScope,
+      "channel-pending-thread",
+      event,
+    );
+    await act(async () => {
+      globalThis.dispatchEvent({ type: "pagehide" });
+      await Promise.resolve();
+    });
+
+    assert.ok(
+      refs.eventsRef.current
+        .get("channel-pending-thread")
+        ?.has("pending-thread-event"),
+      "the renderer projection must cover the native coalescing/IPC window",
+    );
+
+    releaseIngest();
+    await settle();
+    await settle();
+
+    assert.equal(
+      refs.eventsRef.current.has("channel-pending-thread"),
+      false,
+      "the optimistic row must retire after native acknowledgement",
+    );
+    assert.ok(
+      harness.api.projectionsRef.current
+        .get("channel-pending-thread")
+        ?.unreadThreadEventIds.includes("pending-thread-event"),
+      "the acknowledged native projection must retain the unread thread event",
+    );
+  } finally {
+    releaseIngest?.();
+    await harness?.unmount();
+    rig.restore();
+  }
+});
+
 test("native no-op marker delta does not notify the renderer", async () => {
   installFreshStorage();
   let harness;

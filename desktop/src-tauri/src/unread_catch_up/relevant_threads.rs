@@ -4,8 +4,8 @@ use futures_util::{stream, StreamExt};
 use nostr::{Event, Keys};
 
 use super::{
-    catch_up_kinds, fetch_filter_pages, AppState, CatchUpChannel, CHANNEL_FETCH_CONCURRENCY,
-    HORIZON_SECONDS, ROOT_FILTER_CHUNK,
+    catch_up_kinds, fetch_filter_pages, AppState, CatchUpChannel, QueryPacer,
+    CHANNEL_FETCH_CONCURRENCY, HORIZON_SECONDS, ROOT_FILTER_CHUNK,
 };
 
 // Mirrors buzz-relay's aggregate explicit `#h` ceiling. Keep every HTTP
@@ -125,6 +125,7 @@ pub(super) async fn fetch_relevant_thread_events(
     keys: &Keys,
     channels: &[CatchUpChannel],
     roots: &[String],
+    pacer: &QueryPacer,
 ) -> RelevantThreadEvents {
     if channels.is_empty() || roots.is_empty() {
         return RelevantThreadEvents {
@@ -134,7 +135,7 @@ pub(super) async fn fetch_relevant_thread_events(
     }
     let pages = stream::iter(relevant_thread_queries(channels, roots))
         .map(|query| async move {
-            let result = fetch_filter_pages(state, api_base, keys, &query.filter).await;
+            let result = fetch_filter_pages(state, api_base, keys, &query.filter, pacer).await;
             (query.channels, result)
         })
         .buffered(CHANNEL_FETCH_CONCURRENCY)

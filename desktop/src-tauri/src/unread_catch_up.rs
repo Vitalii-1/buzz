@@ -24,7 +24,7 @@ mod window_page;
 use window_page::{parse_top_level_page, PageCursor};
 
 mod page_fetch;
-use page_fetch::{apply_page_cursor, fetch_filter_pages, query_page};
+use page_fetch::{apply_page_cursor, fetch_filter_pages, query_page, QueryPacer};
 
 mod relevant_threads;
 use relevant_threads::fetch_relevant_thread_events;
@@ -223,6 +223,7 @@ async fn fetch_top_level_pages(
     api_base: &str,
     keys: &Keys,
     channel: &CatchUpChannel,
+    pacer: &QueryPacer,
 ) -> Result<Vec<Event>, String> {
     let base = top_level_filter(channel);
     let since = top_level_since(channel);
@@ -233,7 +234,7 @@ async fn fetch_top_level_pages(
         if let Some(current) = &cursor {
             apply_page_cursor(&mut filter, current);
         }
-        let page = query_page(state, api_base, keys, filter).await?;
+        let page = query_page(state, api_base, keys, filter, pacer).await?;
         let (mut rows, next) = parse_top_level_page(page, &channel.id, cursor.as_ref())?;
         // The relay's special top-level window path does not apply `since`.
         // Enforce the frontier locally and stop once its descending cursor has
@@ -254,6 +255,7 @@ async fn fetch_discovery_events(
     keys: &Keys,
     channel: &CatchUpChannel,
     self_pubkey: &str,
+    pacer: &QueryPacer,
 ) -> Result<(Vec<Event>, u64), String> {
     let discovery_through = (chrono::Utc::now().timestamp().max(0) as u64).saturating_sub(1);
     if channel
@@ -264,8 +266,8 @@ async fn fetch_discovery_events(
     }
     let (authored, mentioned) = discovery_filters(channel, self_pubkey, discovery_through);
     let (authored, mentioned) = tokio::try_join!(
-        fetch_filter_pages(state, api_base, keys, &authored),
-        fetch_filter_pages(state, api_base, keys, &mentioned),
+        fetch_filter_pages(state, api_base, keys, &authored, pacer),
+        fetch_filter_pages(state, api_base, keys, &mentioned, pacer),
     )?;
     let mut seen = HashSet::new();
     Ok((
@@ -341,13 +343,16 @@ pub(crate) async fn unread_catch_up(
             relay_url: relay_url.clone(),
         },
     )?;
+    let query_pacer = QueryPacer::new();
 
     // Phase one narrows the deep scan to the current user's own history and
     // direct mentions. Those rows discover the roots phase two is allowed to
     // query; unrelated top-level traffic never crosses the bridge.
     let discovery_results = stream::iter(request.channels.iter().cloned())
         .map(|channel| async {
-            let result = fetch_discovery_events(&state, &api_base, &keys, &channel, &owner).await;
+            let result =
+                fetch_discovery_events(&state, &api_base, &keys, &channel, &owner, &query_pacer)
+                    .await;
             (channel, result)
         })
         .buffered(CHANNEL_FETCH_CONCURRENCY)
@@ -373,8 +378,15 @@ pub(crate) async fn unread_catch_up(
         .iter()
         .map(|(channel, _, _)| channel.clone())
         .collect::<Vec<_>>();
-    let mut relevant =
-        fetch_relevant_thread_events(&state, &api_base, &keys, &discovery_channels, &roots).await;
+    let mut relevant = fetch_relevant_thread_events(
+        &state,
+        &api_base,
+        &keys,
+        &discovery_channels,
+        &roots,
+        &query_pacer,
+    )
+    .await;
     discovery.retain(|(channel, _, _)| {
         let Some(error) = relevant
             .errors_by_channel
@@ -394,8 +406,10 @@ pub(crate) async fn unread_catch_up(
             let state = &state;
             let api_base = &api_base;
             let keys = &keys;
+            let query_pacer = &query_pacer;
             async move {
-                let result = fetch_top_level_pages(state, api_base, keys, &channel).await;
+                let result =
+                    fetch_top_level_pages(state, api_base, keys, &channel, query_pacer).await;
                 (channel, events, discovery_through, result)
             }
         })
