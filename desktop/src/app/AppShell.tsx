@@ -156,16 +156,9 @@ export function AppShell() {
     closeSettings,
     openSearchHit,
   } = useAppNavigation();
-  const {
-    backHistory,
-    canGoBack,
-    canGoForward,
-    forwardHistory,
-    goBack,
-    goBackTo,
-    goForward,
-    goForwardTo,
-  } = useBackForwardControls(describeHistoryLocation(location, channels));
+  const navigationControls = useBackForwardControls(
+    describeHistoryLocation(location, channels),
+  );
   const { selectedChannelId, selectedView } = React.useMemo(
     () => deriveShellRoute(location.pathname),
     [location.pathname],
@@ -777,15 +770,15 @@ export function AppShell() {
                 <AppWorkflowEditorOverlayProvider>
                   {!settingsOpen && !isHuddleRoom ? (
                     <AppTopChrome
-                      backHistory={backHistory}
-                      canGoBack={canGoBack}
-                      canGoForward={canGoForward}
-                      forwardHistory={forwardHistory}
+                      backHistory={navigationControls.backHistory}
+                      canGoBack={navigationControls.canGoBack}
+                      canGoForward={navigationControls.canGoForward}
+                      forwardHistory={navigationControls.forwardHistory}
                       hasCommunityRail={hasCommunityRail}
-                      onGoBack={goBack}
-                      onGoBackTo={goBackTo}
-                      onGoForward={goForward}
-                      onGoForwardTo={goForwardTo}
+                      onGoBack={navigationControls.goBack}
+                      onGoBackTo={navigationControls.goBackTo}
+                      onGoForward={navigationControls.goForward}
+                      onGoForwardTo={navigationControls.goForwardTo}
                     />
                   ) : null}
                   {settingsOpen ? (
