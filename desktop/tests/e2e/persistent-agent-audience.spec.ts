@@ -590,7 +590,7 @@ test("always-mentioned agents remain in the mention button while Enter-send reso
 test("the unfocused main composer keeps its dismissed mention menu closed through a thread send", async ({
   page,
 }) => {
-  await installAudienceFixtures(page, { sendMessageDelayMs: 500 });
+  await installAudienceFixtures(page, { sendMessageDelayMs: 1_500 });
   await openGeneral(page);
 
   const mainComposer = channelComposer(page);
