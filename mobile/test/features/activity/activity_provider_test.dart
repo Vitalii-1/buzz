@@ -299,6 +299,59 @@ void main() {
   );
 
   test(
+    'live activity resurfaces a hidden DM through the existing open action',
+    () async {
+      const self =
+          '1111111111111111111111111111111111111111111111111111111111111111';
+      const alice =
+          '2222222222222222222222222222222222222222222222222222222222222222';
+      final session = _RecordingSessionNotifier();
+      final reopened = <List<String>>[];
+      final container = ProviderContainer(
+        overrides: [
+          relayConfigProvider.overrideWith(_FixedRelayConfigNotifier.new),
+          myPubkeyProvider.overrideWithValue(self),
+          relaySessionProvider.overrideWith(() => session),
+          channelsProvider.overrideWith(
+            () => _FixedChannelsNotifier(
+              const <Channel>[],
+              hiddenDmIds: const {'hidden-dm'},
+            ),
+          ),
+          dmResurfaceActionProvider.overrideWithValue((pubkeys) async {
+            reopened.add(pubkeys);
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await container.read(channelsProvider.future);
+      await container.read(activityProvider.future);
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+
+      session.emit(
+        const NostrEvent(
+          id: 'hidden-dm-message',
+          pubkey: alice,
+          createdAt: 1_700_000_000,
+          kind: EventKind.streamMessageV2,
+          tags: [
+            ['p', self],
+            ['h', 'hidden-dm'],
+          ],
+          content: 'Hello again',
+          sig: '',
+        ),
+      );
+
+      await _waitFor(() => reopened.isNotEmpty);
+      expect(reopened, [
+        [alice],
+      ]);
+    },
+  );
+
+  test(
     'serializes live refreshes and catches up events queued mid-fetch',
     () async {
       final session = _RecordingSessionNotifier();
@@ -409,8 +462,16 @@ void main() {
 
 class _FixedChannelsNotifier extends ChannelsNotifier {
   final List<Channel> channels;
+  final Set<String> _hiddenDmIds;
 
-  _FixedChannelsNotifier(this.channels);
+  _FixedChannelsNotifier(this.channels, {Set<String> hiddenDmIds = const {}})
+    : _hiddenDmIds = hiddenDmIds;
+
+  @override
+  bool get hasLoaded => true;
+
+  @override
+  Set<String> get hiddenDmIds => _hiddenDmIds;
 
   @override
   Future<List<Channel>> build() async => channels;
