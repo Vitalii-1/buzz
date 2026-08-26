@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { provisionChannelManagedAgent } from "./channelAgents.ts";
+import { prepareManagedAgentMentionsForChannel } from "../messages/ui/managedAgentMentionReadiness.ts";
 
 const PUBKEY = "a".repeat(64);
+const ALLOWED_PUBKEY = "b".repeat(64);
 const RUNTIME = {
   id: "goose",
   label: "Goose",
@@ -105,13 +107,81 @@ function toRawAgent(agent) {
   };
 }
 
-test("reuse applies the owner-only default and clears stale allowlists", async (t) => {
+test("reuse applies explicit, persona, and owner-only access policies", async (t) => {
   const priorWindow = globalThis.window;
   t.after(() => {
     globalThis.window = priorWindow;
   });
 
-  for (const personaId of ["persona-1", null]) {
+  const scenarios = [
+    {
+      label: "generic default",
+      personaId: null,
+      personas: [],
+      request: {},
+      expectedMode: "owner-only",
+      expectedAllowlist: [],
+    },
+    {
+      label: "persona unset default",
+      personaId: "persona-owner",
+      personas: [
+        {
+          id: "persona-owner",
+          respondTo: null,
+          respondToAllowlist: [],
+        },
+      ],
+      request: {},
+      expectedMode: "owner-only",
+      expectedAllowlist: [],
+    },
+    {
+      label: "persona anyone",
+      personaId: "persona-anyone",
+      personas: [
+        {
+          id: "persona-anyone",
+          respondTo: "anyone",
+          respondToAllowlist: [ALLOWED_PUBKEY],
+        },
+      ],
+      request: {},
+      expectedMode: "anyone",
+      expectedAllowlist: [ALLOWED_PUBKEY],
+    },
+    {
+      label: "persona allowlist",
+      personaId: "persona-allowlist",
+      personas: [
+        {
+          id: "persona-allowlist",
+          respondTo: "allowlist",
+          respondToAllowlist: [ALLOWED_PUBKEY],
+        },
+      ],
+      request: {},
+      expectedMode: "allowlist",
+      expectedAllowlist: [ALLOWED_PUBKEY],
+    },
+    {
+      label: "explicit override",
+      personaId: "persona-anyone",
+      personas: [
+        {
+          id: "persona-anyone",
+          respondTo: "anyone",
+          respondToAllowlist: [],
+        },
+      ],
+      request: { respondTo: "owner-only" },
+      expectedMode: "owner-only",
+      expectedAllowlist: [],
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const { personaId } = scenario;
     const existing = makeAgent(personaId);
     const calls = [];
     globalThis.window ??= {};
@@ -135,18 +205,32 @@ test("reuse applies the owner-only default and clears stale allowlists", async (
         runtime: RUNTIME,
         name: "reviewer",
         personaId,
+        ...scenario.request,
       },
       {
         managedAgents: [existing],
         channelMemberPubkeys: new Set(),
+        personas: scenario.personas,
       },
     );
 
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0][1].input.respondTo, "owner-only");
-    assert.deepEqual(calls[0][1].input.respondToAllowlist, []);
-    assert.equal(result.agent.respondTo, "owner-only");
-    assert.deepEqual(result.agent.respondToAllowlist, []);
+    assert.equal(calls.length, 1, scenario.label);
+    assert.equal(
+      calls[0][1].input.respondTo,
+      scenario.expectedMode,
+      scenario.label,
+    );
+    assert.deepEqual(
+      calls[0][1].input.respondToAllowlist,
+      scenario.expectedAllowlist,
+      scenario.label,
+    );
+    assert.equal(result.agent.respondTo, scenario.expectedMode, scenario.label);
+    assert.deepEqual(
+      result.agent.respondToAllowlist,
+      scenario.expectedAllowlist,
+      scenario.label,
+    );
   }
 });
 
@@ -177,9 +261,195 @@ test("reuse skips updates when the owner-only default already matches", async (t
       {
         managedAgents: [existing],
         channelMemberPubkeys: new Set(),
+        personas: [],
       },
     );
 
     assert.equal(result.agent, existing);
   }
+});
+
+test("composer identity reuse applies policy before attaching", async (t) => {
+  const priorWindow = globalThis.window;
+  t.after(() => {
+    globalThis.window = priorWindow;
+  });
+
+  const scenarios = [
+    {
+      label: "generic default",
+      personaId: null,
+      personas: [],
+      expectedMode: "owner-only",
+      expectedAllowlist: [],
+    },
+    {
+      label: "persona unset default",
+      personaId: "persona-owner",
+      personas: [
+        {
+          id: "persona-owner",
+          respondTo: null,
+          respondToAllowlist: [],
+        },
+      ],
+      expectedMode: "owner-only",
+      expectedAllowlist: [],
+    },
+    {
+      label: "persona anyone default",
+      personaId: "persona-anyone",
+      personas: [
+        {
+          id: "persona-anyone",
+          respondTo: "anyone",
+          respondToAllowlist: [ALLOWED_PUBKEY],
+        },
+      ],
+      expectedMode: "anyone",
+      expectedAllowlist: [ALLOWED_PUBKEY],
+    },
+    {
+      label: "persona allowlist default",
+      personaId: "persona-allowlist",
+      personas: [
+        {
+          id: "persona-allowlist",
+          respondTo: "allowlist",
+          respondToAllowlist: [ALLOWED_PUBKEY],
+        },
+      ],
+      expectedMode: "allowlist",
+      expectedAllowlist: [ALLOWED_PUBKEY],
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    const existing = makeAgent(scenario.personaId);
+    const sequence = [];
+    globalThis.window ??= {};
+    window.__TAURI_INTERNALS__ = {
+      invoke(command, args) {
+        assert.equal(command, "update_managed_agent", scenario.label);
+        sequence.push("update");
+        return Promise.resolve({
+          agent: toRawAgent({
+            ...existing,
+            respondTo: args.input.respondTo,
+            respondToAllowlist: args.input.respondToAllowlist,
+          }),
+          profile_sync_error: null,
+        });
+      },
+    };
+
+    const result = await prepareManagedAgentMentionsForChannel({
+      mentionPubkeys: [existing.pubkey],
+      channelId: "channel-1",
+      managedAgents: [existing],
+      personas: scenario.personas,
+      attachAgent: async ({ agent }) => {
+        sequence.push("attach");
+        assert.equal(agent.respondTo, scenario.expectedMode, scenario.label);
+        assert.deepEqual(
+          agent.respondToAllowlist,
+          scenario.expectedAllowlist,
+          scenario.label,
+        );
+      },
+      startAgent: async () => {
+        assert.fail(`unexpected start for ${scenario.label}`);
+      },
+    });
+
+    assert.deepEqual(sequence, ["update", "attach"], scenario.label);
+    assert.deepEqual(result, { errors: [], pubkeys: [PUBKEY] }, scenario.label);
+  }
+});
+
+test("composer identity reuse does not attach when the policy update fails", async (t) => {
+  const priorWindow = globalThis.window;
+  t.after(() => {
+    globalThis.window = priorWindow;
+  });
+
+  const existing = makeAgent("persona-owner");
+  globalThis.window ??= {};
+  window.__TAURI_INTERNALS__ = {
+    invoke(command) {
+      assert.equal(command, "update_managed_agent");
+      return Promise.reject(new Error("policy update failed"));
+    },
+  };
+
+  const result = await prepareManagedAgentMentionsForChannel({
+    mentionPubkeys: [existing.pubkey],
+    channelId: "channel-1",
+    managedAgents: [existing],
+    personas: [
+      {
+        id: "persona-owner",
+        respondTo: null,
+        respondToAllowlist: [],
+      },
+    ],
+    attachAgent: async () => {
+      assert.fail("agent attached after its policy update failed");
+    },
+    startAgent: async () => {
+      assert.fail("agent started after its policy update failed");
+    },
+  });
+
+  assert.deepEqual(result.pubkeys, []);
+  assert.deepEqual(result.errors, ["reviewer: policy update failed"]);
+});
+
+test("composer identity reuse applies policy before starting a newly added participant", async (t) => {
+  const priorWindow = globalThis.window;
+  t.after(() => {
+    globalThis.window = priorWindow;
+  });
+
+  const existing = makeAgent("persona-owner", { status: "stopped" });
+  const sequence = [];
+  globalThis.window ??= {};
+  window.__TAURI_INTERNALS__ = {
+    invoke(command, args) {
+      assert.equal(command, "update_managed_agent");
+      sequence.push("update");
+      return Promise.resolve({
+        agent: toRawAgent({
+          ...existing,
+          respondTo: args.input.respondTo,
+          respondToAllowlist: args.input.respondToAllowlist,
+        }),
+        profile_sync_error: null,
+      });
+    },
+  };
+
+  const result = await prepareManagedAgentMentionsForChannel({
+    mentionPubkeys: [existing.pubkey],
+    channelId: "channel-1",
+    managedAgents: [existing],
+    personas: [
+      {
+        id: "persona-owner",
+        respondTo: null,
+        respondToAllowlist: [],
+      },
+    ],
+    participantPubkeys: [existing.pubkey],
+    newlyAddedParticipantPubkeys: [existing.pubkey],
+    attachAgent: async () => {
+      assert.fail("unexpected attach for an existing participant");
+    },
+    startAgent: async () => {
+      sequence.push("start");
+    },
+  });
+
+  assert.deepEqual(sequence, ["update", "start"]);
+  assert.deepEqual(result, { errors: [], pubkeys: [PUBKEY] });
 });

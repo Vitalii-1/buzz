@@ -6,6 +6,7 @@ import {
   useAvailableAcpRuntimes,
   useCreateChannelManagedAgentMutation,
   useManagedAgentsQuery,
+  usePersonasQuery,
   useProvisionChannelManagedAgentMutation,
   useStartManagedAgentMutation,
 } from "@/features/agents/hooks";
@@ -29,8 +30,6 @@ import { normalizePubkey, truncatePubkey } from "@/shared/lib/pubkey";
 import { buildCustomEmojiTags } from "@/shared/lib/customEmojiTags";
 import {
   getErrorMessage,
-  isManagedAgentRunning,
-  isProviderBackedAgent,
   mergeMentionRecipients,
   MENTION_REFERENCE_TAG,
   mergeOutgoingTagsWithReferenceMentions,
@@ -39,6 +38,7 @@ import {
   resolvePreviewTags,
   uniqueNormalizedPubkeys,
 } from "./useMentionSendFlow.helpers";
+import { prepareManagedAgentMentionsForChannel } from "./managedAgentMentionReadiness";
 import { buildAgentAddressMentionTags } from "@/features/messages/lib/agentAddressMention.mjs";
 import type { UseMentionSendFlowOptions } from "./useMentionSendFlow.types";
 
@@ -96,6 +96,7 @@ export function useMentionSendFlow({
     useProvisionChannelManagedAgentMutation(channelId);
   const availableRuntimesQuery = useAvailableAcpRuntimes();
   const managedAgentsQuery = useManagedAgentsQuery();
+  const personasQuery = usePersonasQuery();
   const startAgentMutation = useStartManagedAgentMutation();
   const getManagedAgentsByPubkey = React.useCallback(async () => {
     const agents =
@@ -106,6 +107,9 @@ export function useMentionSendFlow({
       agents.map((agent) => [normalizePubkey(agent.pubkey), agent]),
     );
   }, [managedAgentsQuery.data, managedAgentsQuery.refetch]);
+  const getPersonas = React.useCallback(async () => {
+    return personasQuery.data ?? (await personasQuery.refetch()).data ?? [];
+  }, [personasQuery.data, personasQuery.refetch]);
   const getAvailableRuntimes = React.useCallback(async (): Promise<
     AcpRuntime[]
   > => {
@@ -138,55 +142,31 @@ export function useMentionSendFlow({
           pubkeys: [] as string[],
         };
       }
-      const managedAgentsByPubkey = await getManagedAgentsByPubkey();
+      const [managedAgentsByPubkey, personas] = await Promise.all([
+        getManagedAgentsByPubkey(),
+        getPersonas(),
+      ]);
       for (const agent of preparedManagedAgents) {
         managedAgentsByPubkey.set(normalizePubkey(agent.pubkey), agent);
       }
-      const participantPubkeys = new Set([
-        ...mentions.memberPubkeys,
-        ...preparedParticipantPubkeys.map(normalizePubkey),
-      ]);
-      const errors: string[] = [];
-      const pubkeys: string[] = [];
-      for (const pubkey of uniqueNormalizedPubkeys(mentionPubkeys)) {
-        const agent = managedAgentsByPubkey.get(pubkey);
-        if (!agent) {
-          continue;
-        }
-        try {
-          if (participantPubkeys.has(pubkey)) {
-            if (isProviderBackedAgent(agent)) {
-              if (agent.status !== "deployed") {
-                await startAgentMutation.mutateAsync(agent.pubkey);
-              }
-            } else if (!isManagedAgentRunning(agent)) {
-              await startAgentMutation.mutateAsync(agent.pubkey);
-            }
-          } else {
-            await attachAgentMutation.mutateAsync({
-              channelId: capturedChannelId,
-              agent,
-              role: "bot",
-            });
-          }
-          pubkeys.push(pubkey);
-        } catch (error) {
-          errors.push(
-            `${agent.name}: ${getErrorMessage(
-              error,
-              "Could not prepare agent.",
-            )}`,
-          );
-        }
-      }
-      return {
-        errors,
-        pubkeys: uniqueNormalizedPubkeys(pubkeys),
-      };
+      return prepareManagedAgentMentionsForChannel({
+        mentionPubkeys,
+        channelId: capturedChannelId,
+        managedAgents: managedAgentsByPubkey.values(),
+        personas,
+        participantPubkeys: [
+          ...mentions.memberPubkeys,
+          ...preparedParticipantPubkeys,
+        ],
+        newlyAddedParticipantPubkeys: preparedParticipantPubkeys,
+        attachAgent: (input) => attachAgentMutation.mutateAsync(input),
+        startAgent: (pubkey) => startAgentMutation.mutateAsync(pubkey),
+      });
     },
     [
       attachAgentMutation,
       getManagedAgentsByPubkey,
+      getPersonas,
       mentions.memberPubkeys,
       startAgentMutation,
     ],
