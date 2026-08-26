@@ -13,6 +13,7 @@ import {
   TerminalContextOverrideProvider,
 } from "@/app/TerminalContextOverrideContext";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
+import { describeHistoryLocation } from "@/app/navigation/navigationHistory";
 import { useBackForwardControls } from "@/app/navigation/useBackForwardControls";
 import { useCommunityNavigationTransitions } from "@/app/useCommunityNavigationTransitions";
 import { useLiveHomeFeedActions } from "@/app/useLiveHomeFeedActions";
@@ -140,6 +141,8 @@ export function AppShell() {
   const mainInsetRef = React.useRef<HTMLElement>(null);
   const location = useLocation();
   const queryClient = useQueryClient();
+  const channelsQuery = useChannelsQuery();
+  const channels = channelsQuery.data ?? [];
   useManagedAgentRuntimeReconciliation(communitiesHook.communities); // sync storage snapshot
   const {
     goAgents,
@@ -153,8 +156,8 @@ export function AppShell() {
     closeSettings,
     openSearchHit,
   } = useAppNavigation();
-  const { canGoBack, canGoForward, goBack, goForward } =
-    useBackForwardControls();
+  const { backHistory, canGoBack, canGoForward, goBack, goBackTo, goForward } =
+    useBackForwardControls(describeHistoryLocation(location, channels));
   const { selectedChannelId, selectedView } = React.useMemo(
     () => deriveShellRoute(location.pathname),
     [location.pathname],
@@ -232,8 +235,6 @@ export function AppShell() {
   const { feedProfilesQuery, homeFeedQuery, notificationSettings } =
     useHomeFeedNotifications(identityQuery.data?.pubkey);
   const feedItemState = useFeedItemState(identityQuery.data?.pubkey);
-  const channelsQuery = useChannelsQuery();
-  const channels = channelsQuery.data ?? [];
   useReminderNotifications(
     identityQuery.data?.pubkey,
     notificationSettings.settings,
@@ -768,10 +769,12 @@ export function AppShell() {
                 <AppWorkflowEditorOverlayProvider>
                   {!settingsOpen && !isHuddleRoom ? (
                     <AppTopChrome
+                      backHistory={backHistory}
                       canGoBack={canGoBack}
                       canGoForward={canGoForward}
                       hasCommunityRail={hasCommunityRail}
                       onGoBack={goBack}
+                      onGoBackTo={goBackTo}
                       onGoForward={goForward}
                     />
                   ) : null}

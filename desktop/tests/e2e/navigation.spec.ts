@@ -93,6 +93,51 @@ test("global back and forward move across channel routes", async ({ page }) => {
   await expect(page.getByTestId("chat-title")).toHaveText("random");
 });
 
+test("back history menu opens on right click and long press", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  await page.getByTestId("channel-random").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("random");
+  await page.getByTestId("channel-engineering").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("engineering");
+
+  const backButton = page.getByTestId("global-back");
+  const historyMenu = page.getByTestId("global-back-history-menu");
+
+  await expect(backButton).toHaveAttribute("data-history-count", "3");
+  await backButton.click({ button: "right" });
+  await expect(historyMenu).toBeVisible();
+  await expect(historyMenu.getByTestId("global-back-history-item")).toHaveText([
+    "#random",
+    "#general",
+    "Inbox",
+  ]);
+  await historyMenu
+    .getByRole("menuitem", { name: "Go back to #general" })
+    .click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  await page.getByTestId("channel-deep-history").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("deep-history");
+
+  const bounds = await backButton.boundingBox();
+  expect(bounds).not.toBeNull();
+  await page.mouse.move(
+    (bounds?.x ?? 0) + (bounds?.width ?? 0) / 2,
+    (bounds?.y ?? 0) + (bounds?.height ?? 0) / 2,
+  );
+  await page.mouse.down();
+  await expect(historyMenu).toBeVisible();
+  await page.mouse.up();
+  await expect(historyMenu).toBeVisible();
+  await historyMenu.getByRole("menuitem", { name: "Go back to Inbox" }).click();
+  await expect(page.getByTestId("home-inbox")).toBeVisible();
+});
+
 test("back/forward keyboard chords work while the composer has focus", async ({
   page,
 }) => {
