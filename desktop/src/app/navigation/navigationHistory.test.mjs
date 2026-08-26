@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   describeHistoryLocation,
   getBackHistoryEntries,
+  getForwardHistoryEntries,
 } from "./navigationHistory.ts";
 
 function entry(index) {
@@ -18,6 +19,17 @@ test("back history returns the nearest ten entries in reverse order", () => {
   assert.deepEqual(
     getBackHistoryEntries(entriesByIndex, 13).map(({ index }) => index),
     [12, 11, 10, 9, 8, 7, 6, 5, 4, 3],
+  );
+});
+
+test("forward history returns the nearest ten entries in navigation order", () => {
+  const entriesByIndex = new Map(
+    Array.from({ length: 14 }, (_, index) => [index, entry(index)]),
+  );
+
+  assert.deepEqual(
+    getForwardHistoryEntries(entriesByIndex, 0, 13).map(({ index }) => index),
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
   );
 });
 

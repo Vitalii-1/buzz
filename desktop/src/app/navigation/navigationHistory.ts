@@ -1,23 +1,44 @@
 import type { Channel } from "@/shared/api/types";
 
-export type BackHistoryEntry = {
+export type NavigationHistoryEntry = {
   index: number;
   key: string;
   label: string;
 };
 
-const MAX_BACK_HISTORY_ENTRIES = 10;
+const MAX_HISTORY_MENU_ENTRIES = 10;
 
 export function getBackHistoryEntries(
-  entriesByIndex: ReadonlyMap<number, BackHistoryEntry>,
+  entriesByIndex: ReadonlyMap<number, NavigationHistoryEntry>,
   currentIndex: number,
-): BackHistoryEntry[] {
-  const entries: BackHistoryEntry[] = [];
+): NavigationHistoryEntry[] {
+  const entries: NavigationHistoryEntry[] = [];
 
   for (
     let index = currentIndex - 1;
-    index >= 0 && entries.length < MAX_BACK_HISTORY_ENTRIES;
+    index >= 0 && entries.length < MAX_HISTORY_MENU_ENTRIES;
     index -= 1
+  ) {
+    const entry = entriesByIndex.get(index);
+    if (entry) {
+      entries.push(entry);
+    }
+  }
+
+  return entries;
+}
+
+export function getForwardHistoryEntries(
+  entriesByIndex: ReadonlyMap<number, NavigationHistoryEntry>,
+  currentIndex: number,
+  maxIndex: number,
+): NavigationHistoryEntry[] {
+  const entries: NavigationHistoryEntry[] = [];
+
+  for (
+    let index = currentIndex + 1;
+    index <= maxIndex && entries.length < MAX_HISTORY_MENU_ENTRIES;
+    index += 1
   ) {
     const entry = entriesByIndex.get(index);
     if (entry) {

@@ -9,8 +9,9 @@ import { listen } from "@tauri-apps/api/event";
 
 import { matchBackForwardChord } from "@/app/navigation/backForwardChords";
 import {
-  type BackHistoryEntry,
+  type NavigationHistoryEntry,
   getBackHistoryEntries,
+  getForwardHistoryEntries,
 } from "@/app/navigation/navigationHistory";
 import {
   traverseHistory,
@@ -37,7 +38,7 @@ export function useBackForwardControls(currentLabel: string) {
   const locationKey =
     locationState.__TSR_key ?? locationState.key ?? String(locationIndex);
   const [historyState, setHistoryState] = React.useState(() => ({
-    entriesByIndex: new Map<number, BackHistoryEntry>([
+    entriesByIndex: new Map<number, NavigationHistoryEntry>([
       [
         locationIndex,
         { index: locationIndex, key: locationKey, label: currentLabel },
@@ -82,6 +83,15 @@ export function useBackForwardControls(currentLabel: string) {
     () => getBackHistoryEntries(historyState.entriesByIndex, locationIndex),
     [historyState.entriesByIndex, locationIndex],
   );
+  const forwardHistory = React.useMemo(
+    () =>
+      getForwardHistoryEntries(
+        historyState.entriesByIndex,
+        locationIndex,
+        historyState.maxIndex,
+      ),
+    [historyState.entriesByIndex, historyState.maxIndex, locationIndex],
+  );
 
   const goBack = React.useCallback(() => {
     if (!canGoBack) {
@@ -103,6 +113,18 @@ export function useBackForwardControls(currentLabel: string) {
     (index: number) => {
       const delta = index - locationIndex;
       if (delta >= 0 || !historyState.entriesByIndex.has(index)) {
+        return;
+      }
+
+      traverseHistoryBy(router.history, delta);
+    },
+    [historyState.entriesByIndex, locationIndex, router.history],
+  );
+
+  const goForwardTo = React.useCallback(
+    (index: number) => {
+      const delta = index - locationIndex;
+      if (delta <= 0 || !historyState.entriesByIndex.has(index)) {
         return;
       }
 
@@ -172,8 +194,10 @@ export function useBackForwardControls(currentLabel: string) {
     backHistory,
     canGoBack,
     canGoForward,
+    forwardHistory,
     goBack,
     goBackTo,
     goForward,
+    goForwardTo,
   };
 }

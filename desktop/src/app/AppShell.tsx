@@ -156,8 +156,16 @@ export function AppShell() {
     closeSettings,
     openSearchHit,
   } = useAppNavigation();
-  const { backHistory, canGoBack, canGoForward, goBack, goBackTo, goForward } =
-    useBackForwardControls(describeHistoryLocation(location, channels));
+  const {
+    backHistory,
+    canGoBack,
+    canGoForward,
+    forwardHistory,
+    goBack,
+    goBackTo,
+    goForward,
+    goForwardTo,
+  } = useBackForwardControls(describeHistoryLocation(location, channels));
   const { selectedChannelId, selectedView } = React.useMemo(
     () => deriveShellRoute(location.pathname),
     [location.pathname],
@@ -772,10 +780,12 @@ export function AppShell() {
                       backHistory={backHistory}
                       canGoBack={canGoBack}
                       canGoForward={canGoForward}
+                      forwardHistory={forwardHistory}
                       hasCommunityRail={hasCommunityRail}
                       onGoBack={goBack}
                       onGoBackTo={goBackTo}
                       onGoForward={goForward}
+                      onGoForwardTo={goForwardTo}
                     />
                   ) : null}
                   {settingsOpen ? (

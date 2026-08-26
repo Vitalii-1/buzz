@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 
+import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge } from "../helpers/bridge";
 import { openSettings } from "../helpers/settings";
 
@@ -38,6 +39,69 @@ async function navigateToWorkflows(page: import("@playwright/test").Page) {
   await page.getByTestId("open-workflows-view").click();
   await expect(page).toHaveURL(/#\/workflows$/);
   await expect(page.getByTestId("workflows-view")).toBeVisible();
+}
+
+async function openHistoryMenuWithLongPress(
+  page: import("@playwright/test").Page,
+  button: import("@playwright/test").Locator,
+  menu: import("@playwright/test").Locator,
+) {
+  const bounds = await button.boundingBox();
+  expect(bounds).not.toBeNull();
+  await page.mouse.move(
+    (bounds?.x ?? 0) + (bounds?.width ?? 0) / 2,
+    (bounds?.y ?? 0) + (bounds?.height ?? 0) / 2,
+  );
+  await page.mouse.down();
+  await expect(menu).toBeVisible();
+  await page.mouse.up();
+  await expect(menu).toBeVisible();
+}
+
+async function captureHistoryControlAppearance(
+  page: import("@playwright/test").Page,
+  button: import("@playwright/test").Locator,
+  menu: import("@playwright/test").Locator,
+) {
+  await waitForAnimations(page);
+  const [buttonBounds, menuBounds] = await Promise.all([
+    button.boundingBox(),
+    menu.boundingBox(),
+  ]);
+  if (!buttonBounds || !menuBounds) {
+    throw new Error("History control is not visible");
+  }
+
+  const padding = 4;
+  const x = Math.max(
+    0,
+    Math.floor(Math.min(buttonBounds.x, menuBounds.x)) - padding,
+  );
+  const y = Math.max(
+    0,
+    Math.floor(Math.min(buttonBounds.y, menuBounds.y)) - padding,
+  );
+  const right = Math.ceil(
+    Math.max(
+      buttonBounds.x + buttonBounds.width,
+      menuBounds.x + menuBounds.width,
+    ),
+  );
+  const bottom = Math.ceil(
+    Math.max(
+      buttonBounds.y + buttonBounds.height,
+      menuBounds.y + menuBounds.height,
+    ),
+  );
+
+  return page.screenshot({
+    clip: {
+      height: bottom - y + padding,
+      width: right - x + padding,
+      x,
+      y,
+    },
+  });
 }
 
 async function createWorkflow(
@@ -93,7 +157,7 @@ test("global back and forward move across channel routes", async ({ page }) => {
   await expect(page.getByTestId("chat-title")).toHaveText("random");
 });
 
-test("back history menu opens on right click and long press", async ({
+test("back and forward history menus match across right click and long press", async ({
   page,
 }) => {
   await page.goto("/");
@@ -116,26 +180,60 @@ test("back history menu opens on right click and long press", async ({
     "#general",
     "Inbox",
   ]);
+  const rightClickAppearance = await captureHistoryControlAppearance(
+    page,
+    backButton,
+    historyMenu,
+  );
+  await page.keyboard.press("Escape");
+  await expect(historyMenu).not.toBeVisible();
+
+  await openHistoryMenuWithLongPress(page, backButton, historyMenu);
+  await expect(historyMenu.getByTestId("global-back-history-item")).toHaveText([
+    "#random",
+    "#general",
+    "Inbox",
+  ]);
+  expect(
+    await captureHistoryControlAppearance(page, backButton, historyMenu),
+  ).toEqual(rightClickAppearance);
   await historyMenu
     .getByRole("menuitem", { name: "Go back to #general" })
     .click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
 
-  await page.getByTestId("channel-deep-history").click();
-  await expect(page.getByTestId("chat-title")).toHaveText("deep-history");
+  const forwardButton = page.getByTestId("global-forward");
+  const forwardHistoryMenu = page.getByTestId("global-forward-history-menu");
 
-  const bounds = await backButton.boundingBox();
-  expect(bounds).not.toBeNull();
-  await page.mouse.move(
-    (bounds?.x ?? 0) + (bounds?.width ?? 0) / 2,
-    (bounds?.y ?? 0) + (bounds?.height ?? 0) / 2,
+  await expect(forwardButton).toHaveAttribute("data-history-count", "2");
+  await forwardButton.click({ button: "right" });
+  await expect(forwardHistoryMenu).toBeVisible();
+  await expect(
+    forwardHistoryMenu.getByTestId("global-forward-history-item"),
+  ).toHaveText(["#random", "#engineering"]);
+  const forwardRightClickAppearance = await captureHistoryControlAppearance(
+    page,
+    forwardButton,
+    forwardHistoryMenu,
   );
-  await page.mouse.down();
-  await expect(historyMenu).toBeVisible();
-  await page.mouse.up();
-  await expect(historyMenu).toBeVisible();
-  await historyMenu.getByRole("menuitem", { name: "Go back to Inbox" }).click();
-  await expect(page.getByTestId("home-inbox")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(forwardHistoryMenu).not.toBeVisible();
+
+  await openHistoryMenuWithLongPress(page, forwardButton, forwardHistoryMenu);
+  await expect(
+    forwardHistoryMenu.getByTestId("global-forward-history-item"),
+  ).toHaveText(["#random", "#engineering"]);
+  expect(
+    await captureHistoryControlAppearance(
+      page,
+      forwardButton,
+      forwardHistoryMenu,
+    ),
+  ).toEqual(forwardRightClickAppearance);
+  await forwardHistoryMenu
+    .getByRole("menuitem", { name: "Go forward to #engineering" })
+    .click();
+  await expect(page.getByTestId("chat-title")).toHaveText("engineering");
 });
 
 test("back/forward keyboard chords work while the composer has focus", async ({
