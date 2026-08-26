@@ -1303,7 +1303,7 @@ fn to_ws_url(http_url: &str) -> String {
 }
 
 /// Normalize raw event JSON array into the canonical Nostr event shape.
-/// Valid signatures are preserved; absent or malformed signatures remain absent.
+/// String signatures are preserved; absent or non-string signatures remain absent.
 pub fn normalize_events(events: &[serde_json::Value]) -> String {
     let normalized: Vec<serde_json::Value> = events
         .iter()
