@@ -6,7 +6,6 @@ use byteorder::{BigEndian, ByteOrder};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-const MAX_ATTESTATION_BYTES: usize = 16 * 1024;
 const MAX_ASSERTION_BYTES: usize = 1024;
 const APPLE_APP_ATTEST_ROOT_PEM_SHA256: [u8; 32] = [
     0xc7, 0x78, 0xd0, 0x9a, 0xc3, 0x41, 0xf7, 0xfd, 0x9f, 0x8f, 0x3b, 0x19, 0xe2, 0xb8, 0x15, 0xaf,
@@ -57,7 +56,7 @@ impl AppAttestVerifier {
         let cbor = STANDARD
             .decode(attestation_b64)
             .map_err(|_| AppAttestError::Invalid)?;
-        if cbor.is_empty() || cbor.len() > MAX_ATTESTATION_BYTES {
+        if cbor.is_empty() || cbor.len() > crate::model::MAX_APP_ATTESTATION_BYTES {
             return Err(AppAttestError::Invalid);
         }
         let challenge = std::str::from_utf8(client_data).map_err(|_| AppAttestError::Invalid)?;

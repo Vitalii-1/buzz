@@ -756,16 +756,21 @@ pub fn router_with_metrics(
     state: AppState,
     metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
 ) -> (Router, Router) {
-    let public = Router::new()
-        .route("/v1/installations/challenges", post(challenge))
+    let enrollment = Router::new()
         .route("/v1/installations", post(enroll))
+        .layer(RequestBodyLimitLayer::new(MAX_ENROLL_REQUEST_BYTES));
+    let standard_requests = Router::new()
+        .route("/v1/installations/challenges", post(challenge))
         .route("/v1/delegations", post(delegate))
         .route("/v1/delegations/revoke", post(revoke_delegation))
         .route("/v1/installations/endpoint", post(rotate_endpoint))
         .route("/v1/installations/revoke", post(revoke_installation))
         .route("/v1/deliveries/apns", post(deliver))
+        .layer(RequestBodyLimitLayer::new(MAX_REQUEST_BYTES));
+    let public = Router::new()
+        .merge(enrollment)
+        .merge(standard_requests)
         .with_state(state.clone())
-        .layer(RequestBodyLimitLayer::new(MAX_REQUEST_BYTES))
         .layer(ConcurrencyLimitLayer::new(256))
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -794,6 +799,107 @@ pub fn router_with_metrics(
         );
     }
     (public, health)
+}
+
+#[cfg(test)]
+mod request_limit_tests {
+    use super::*;
+    use crate::{
+        authority::MemoryAuthorityStore,
+        grant::{GrantKey, GrantKeyring},
+        token::{TokenKey, TokenKeyring},
+    };
+    use axum::{body::Body, http::Request};
+    use tower::ServiceExt;
+
+    struct NeverTransport;
+
+    #[async_trait::async_trait]
+    impl PushTransport for NeverTransport {
+        async fn send(&self, _: DeliveryAttempt, _: &str) -> DeliveryOutcome {
+            panic!("request-size tests never send to APNs")
+        }
+    }
+
+    fn fixed_now() -> i64 {
+        1_750_000_000
+    }
+
+    fn state() -> AppState {
+        let app_attest = AppAttestVerifier::new(
+            "TEAMID.xyz.block.buzz.dogfood.mobile".to_owned(),
+            include_bytes!("../tests/fixtures/apple-app-attestation-root.pem").to_vec(),
+        )
+        .expect("pinned Apple root fixture");
+        AppState {
+            grant_keyring: Arc::new(
+                GrantKeyring::new(vec![GrantKey::new("test", &[1; 32]).unwrap()]).unwrap(),
+            ),
+            authority: Arc::new(MemoryAuthorityStore::default()),
+            token_keyring: Arc::new(
+                TokenKeyring::new(vec![TokenKey::new("test", &[2; 32]).unwrap()]).unwrap(),
+            ),
+            profile: Arc::new(ProfileRuntime {
+                app_attest: Arc::new(app_attest),
+                transport: Arc::new(NeverTransport),
+            }),
+            delivery_url: "https://push.buzz.xyz/v1/deliveries/apns".parse().unwrap(),
+            max_grant_lifetime_seconds: 86_400,
+            max_installation_lifetime_seconds: 86_400,
+            endpoint_quota_window_seconds: 60,
+            endpoint_quota_max_deliveries: 10,
+            now: fixed_now,
+            accepting: Arc::new(AtomicBool::new(true)),
+        }
+    }
+
+    fn maximum_enrollment_body() -> Vec<u8> {
+        serde_json::to_vec(&InstallationEnrollRequest {
+            v: WIRE_VERSION,
+            challenge_id: uuid::Uuid::nil(),
+            challenge: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0; 32]),
+            key_id: STANDARD.encode([0; 32]),
+            attestation: STANDARD.encode(vec![0; MAX_APP_ATTESTATION_BYTES]),
+            app_profile: AppProfile::BuzzIosDogfood,
+            endpoint: "ab".repeat(MAX_ENDPOINT_HEX_BYTES),
+            endpoint_epoch: 1,
+            expires_at: fixed_now() + 60,
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn maximum_valid_enrollment_envelope_reaches_the_handler() {
+        let body = maximum_enrollment_body();
+        assert!(body.len() > MAX_REQUEST_BYTES);
+        assert!(body.len() <= MAX_ENROLL_REQUEST_BYTES);
+        let (public, _) = router(state());
+        let response = public
+            .oneshot(
+                Request::post("/v1/installations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn enrollment_envelope_stays_bounded() {
+        let (public, _) = router(state());
+        let response = public
+            .oneshot(
+                Request::post("/v1/installations")
+                    .header("content-type", "application/json")
+                    .body(Body::from(vec![b' '; MAX_ENROLL_REQUEST_BYTES + 1]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
 }
 
 /// Known-answer vectors for the exact App Attest transcript bytes defined by
