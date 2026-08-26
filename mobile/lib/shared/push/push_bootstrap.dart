@@ -42,6 +42,21 @@ class BuzzPushAttemptGate {
     });
   }
 
+  void retryAfter(
+    String attempt, {
+    required Duration delay,
+    required VoidCallback retry,
+  }) {
+    if (_attempt != attempt) return;
+    _retryTimer?.cancel();
+    _retryTimer = Timer(delay, () {
+      _retryTimer = null;
+      if (_attempt != attempt) return;
+      _attempt = null;
+      retry();
+    });
+  }
+
   void dispose() => _retryTimer?.cancel();
 }
 
@@ -148,11 +163,31 @@ class BuzzPushBootstrap extends HookConsumerWidget {
           session: ref.read(relaySessionProvider.notifier),
           nsec: config.nsec!,
         );
-        unawaited(
-          _publish(ref, config, community, memberPubkey!, relay).catchError((
-            Object error,
-            StackTrace stack,
-          ) {
+        unawaited(() async {
+          try {
+            final grant = await _publish(
+              ref,
+              config,
+              community,
+              memberPubkey!,
+              relay,
+            );
+            final renewInMilliseconds =
+                grant.expiresAt * 1000 -
+                DateTime.now().millisecondsSinceEpoch -
+                const Duration(minutes: 5).inMilliseconds;
+            publicationAttempt.retryAfter(
+              attempt,
+              delay: Duration(
+                milliseconds: renewInMilliseconds > 1000
+                    ? renewInMilliseconds
+                    : 1000,
+              ),
+              retry: () {
+                if (context.mounted) publicationRetry.value += 1;
+              },
+            );
+          } catch (error, stack) {
             publicationAttempt.failed(
               attempt,
               retry: () {
@@ -161,8 +196,8 @@ class BuzzPushBootstrap extends HookConsumerWidget {
             );
             debugPrint('Push lease bootstrap failed: $error');
             debugPrintStack(stackTrace: stack);
-          }),
-        );
+          }
+        }());
         return null;
       },
       [
@@ -193,7 +228,7 @@ class BuzzPushBootstrap extends HookConsumerWidget {
       memberPubkey != null &&
       memberPubkey.isNotEmpty;
 
-  static Future<void> _publish(
+  static Future<BuzzPushEndpointGrant> _publish(
     WidgetRef ref,
     RelayConfig config,
     Community community,
@@ -230,5 +265,6 @@ class BuzzPushBootstrap extends HookConsumerWidget {
           subscriptions: desired,
           generation: leaseGeneration,
         );
+    return grant;
   }
 }

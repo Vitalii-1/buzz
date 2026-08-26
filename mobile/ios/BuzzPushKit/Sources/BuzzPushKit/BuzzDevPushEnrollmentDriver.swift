@@ -434,16 +434,22 @@ public final class BuzzDevPushEnrollmentDriver {
 
     // A previously attested installation can delegate independently to a new
     // relay key, or issue a higher-generation grant for the same relay,
-    // without attempting duplicate APNs-token enrollment.
+    // without attempting duplicate APNs-token enrollment. An installation in
+    // its final five minutes is renewed by the authenticated delegation.
     let reusableInstallation = storedRecords.first { record in
       guard record.appProfile == Self.appProfile,
         record.endpointHash == endpointHash,
         record.endpointEpoch == Self.endpointEpoch,
-        record.expiresAt > nowSeconds + 300,
+        record.expiresAt > nowSeconds,
         let handle = record.gatewayInstallationHandle,
         let uuid = UUID(uuidString: handle)
       else { return false }
       return handle == uuid.uuidString.lowercased()
+    }
+
+    let (renewedExpiration, expiresOverflow) = nowSeconds.addingReportingOverflow(lifetimeSeconds)
+    guard !expiresOverflow else {
+      throw BuzzDevPushEnrollmentError.invalidGatewayURL
     }
 
     let installation: UUID
@@ -453,13 +459,11 @@ public final class BuzzDevPushEnrollmentDriver {
       let existing = UUID(uuidString: handle)
     {
       installation = existing
-      expiresAt = reusableInstallation.expiresAt
+      expiresAt = reusableInstallation.expiresAt > nowSeconds + 300
+        ? reusableInstallation.expiresAt
+        : renewedExpiration
     } else {
-      let (newExpiration, expiresOverflow) = nowSeconds.addingReportingOverflow(lifetimeSeconds)
-      guard !expiresOverflow else {
-        throw BuzzDevPushEnrollmentError.invalidGatewayURL
-      }
-      expiresAt = newExpiration
+      expiresAt = renewedExpiration
       let enrollmentChallenge = try await challenge()
       let preparedAttestation = try await appAttest.prepareAttestation()
       let enrollmentClientData = try BuzzPushTranscript.enroll(

@@ -88,6 +88,7 @@ fn decode_challenge(value: &str) -> Option<[u8; 32]> {
 fn authority_error(e: AuthorityError) -> Response {
     match e {
         AuthorityError::Rejected => error(StatusCode::NOT_FOUND, "not_authorized"),
+        AuthorityError::RateLimited => error(StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         AuthorityError::Unavailable => {
             error(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable")
         }
@@ -130,6 +131,7 @@ async fn challenge(State(s): State<AppState>, body: Bytes) -> Response {
     let c = Challenge {
         id: uuid::Uuid::new_v4(),
         value,
+        created_at: now,
         expires_at,
     };
     if let Err(e) = s.authority.put_challenge(c.clone()).await {
@@ -229,7 +231,7 @@ async fn enroll(State(s): State<AppState>, body: Bytes) -> Response {
         endpoint_epoch: 1,
         expires_at: r.expires_at,
     };
-    if let Err(e) = s.authority.create_installation(n).await {
+    if let Err(e) = s.authority.create_installation(n, now).await {
         return authority_error(e);
     }
     (
@@ -631,6 +633,11 @@ async fn deliver(State(s): State<AppState>, headers: HeaderMap, body: Bytes) -> 
             crate::metrics::record_admission(crate::metrics::Admission::Rejected);
             crate::metrics::record_delivery_error("invalid_grant");
             return error(StatusCode::NOT_FOUND, "invalid_grant");
+        }
+        Err(AuthorityError::RateLimited) => {
+            crate::metrics::record_admission(crate::metrics::Admission::Rejected);
+            crate::metrics::record_delivery_error("rate_limited");
+            return error(StatusCode::TOO_MANY_REQUESTS, "rate_limited");
         }
         Err(AuthorityError::Unavailable) => {
             crate::metrics::record_admission(crate::metrics::Admission::Unavailable);

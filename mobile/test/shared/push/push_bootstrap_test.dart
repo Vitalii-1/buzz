@@ -31,6 +31,19 @@ void main() {
     expect(gate.tryBegin('new'), isFalse);
   });
 
+  test('successful bootstrap becomes retryable at renewal time', () async {
+    final gate = BuzzPushAttemptGate(retryDelay: Duration.zero);
+    addTearDown(gate.dispose);
+    var retries = 0;
+
+    expect(gate.tryBegin('attempt'), isTrue);
+    gate.retryAfter('attempt', delay: Duration.zero, retry: () => retries += 1);
+    await Future<void>.delayed(Duration.zero);
+
+    expect(retries, 1);
+    expect(gate.tryBegin('attempt'), isTrue);
+  });
+
   test('publication attempt changes when the relay executor rotates', () {
     final subscription = BuzzPushSubscription(
       filter: BuzzPushFilter(kinds: const [9], pTags: [_hex('a')]),

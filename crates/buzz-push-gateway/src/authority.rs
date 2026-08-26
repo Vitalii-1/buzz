@@ -15,8 +15,15 @@ use uuid::Uuid;
 pub struct Challenge {
     pub id: Uuid,
     pub value: [u8; 32],
+    pub created_at: i64,
     pub expires_at: i64,
 }
+
+/// Challenge issuance is intentionally bounded inside the durable authority
+/// store so the public unauthenticated route cannot amplify database writes
+/// across gateway replicas.
+pub(crate) const CHALLENGE_QUOTA_WINDOW_SECONDS: i64 = 60;
+pub(crate) const CHALLENGE_QUOTA_MAX_REQUESTS: usize = 600;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewInstallation {
@@ -96,6 +103,8 @@ pub enum DeliveryDisposition {
 pub enum AuthorityError {
     #[error("authority state rejected the request")]
     Rejected,
+    #[error("authority request rate exceeded")]
+    RateLimited,
     #[error("authority store unavailable")]
     Unavailable,
 }
@@ -116,6 +125,7 @@ pub trait AuthorityStore: Send + Sync {
     async fn create_installation(
         &self,
         installation: NewInstallation,
+        now: i64,
     ) -> Result<(), AuthorityError>;
     async fn installation(&self, id: Uuid, now: i64) -> Result<Installation, AuthorityError>;
     async fn advance_assertion_counter(
@@ -204,6 +214,17 @@ impl AuthorityStore for MemoryAuthorityStore {
 
     async fn put_challenge(&self, challenge: Challenge) -> Result<(), AuthorityError> {
         let mut s = self.0.lock().map_err(|_| AuthorityError::Unavailable)?;
+        let window_start = challenge
+            .created_at
+            .saturating_sub(CHALLENGE_QUOTA_WINDOW_SECONDS);
+        if s.challenges
+            .values()
+            .filter(|existing| existing.created_at >= window_start)
+            .count()
+            >= CHALLENGE_QUOTA_MAX_REQUESTS
+        {
+            return Err(AuthorityError::RateLimited);
+        }
         if s.challenges.insert(challenge.id, challenge).is_some() {
             return Err(AuthorityError::Rejected);
         }
@@ -224,12 +245,42 @@ impl AuthorityStore for MemoryAuthorityStore {
         Ok(())
     }
 
-    async fn create_installation(&self, n: NewInstallation) -> Result<(), AuthorityError> {
+    async fn create_installation(
+        &self,
+        n: NewInstallation,
+        now: i64,
+    ) -> Result<(), AuthorityError> {
         let mut s = self.0.lock().map_err(|_| AuthorityError::Unavailable)?;
         let token_key = (n.profile, n.token_fingerprint);
-        if s.installations.contains_key(&n.id) || s.token_owners.contains_key(&token_key) {
-            // Token possession alone never supersedes a live installation.
+        if s.installations.contains_key(&n.id) {
             return Err(AuthorityError::Rejected);
+        }
+        let replaced = s
+            .installations
+            .values()
+            .filter(|installation| {
+                installation.app_attest_key_id == n.app_attest_key_id
+                    || (installation.profile == n.profile
+                        && installation.token_fingerprint == n.token_fingerprint)
+            })
+            .map(|installation| installation.id)
+            .collect::<Vec<_>>();
+        if replaced.iter().any(|id| {
+            s.installations
+                .get(id)
+                .is_some_and(|installation| !installation.revoked && installation.expires_at >= now)
+        }) {
+            // App identity and token possession never supersede a live installation.
+            return Err(AuthorityError::Rejected);
+        }
+        for id in replaced {
+            if let Some(old) = s.installations.remove(&id) {
+                s.token_owners.remove(&(old.profile, old.token_fingerprint));
+            }
+            s.delegations
+                .retain(|(installation_id, _), _| *installation_id != id);
+            s.delegation_ids
+                .retain(|_, (installation_id, _)| *installation_id != id);
         }
         s.token_owners.insert(token_key, n.id);
         s.installations.insert(
@@ -283,15 +334,14 @@ impl AuthorityStore for MemoryAuthorityStore {
 
     async fn upsert_delegation(&self, d: Delegation) -> Result<(), AuthorityError> {
         let mut s = self.0.lock().map_err(|_| AuthorityError::Unavailable)?;
-        let i = s
+        let installation = s
             .installations
             .get(&d.installation_id)
             .ok_or(AuthorityError::Rejected)?;
-        if i.revoked
-            || i.endpoint_epoch != d.endpoint_epoch
+        if installation.revoked
+            || installation.endpoint_epoch != d.endpoint_epoch
             || d.generation < 1
             || d.not_before >= d.expires_at
-            || d.expires_at > i.expires_at
         {
             return Err(AuthorityError::Rejected);
         }
@@ -303,6 +353,11 @@ impl AuthorityStore for MemoryAuthorityStore {
         {
             return Err(AuthorityError::Rejected);
         }
+        let installation = s
+            .installations
+            .get_mut(&d.installation_id)
+            .ok_or(AuthorityError::Rejected)?;
+        installation.expires_at = installation.expires_at.max(d.expires_at);
         s.delegation_ids.insert(d.id, key.clone());
         s.delegations.insert(key, d);
         Ok(())
@@ -515,17 +570,20 @@ mod tests {
     async fn store() -> MemoryAuthorityStore {
         let store = MemoryAuthorityStore::default();
         store
-            .create_installation(NewInstallation {
-                id: Uuid::from_u128(1),
-                app_attest_key_id: vec![1],
-                app_attest_public_key: vec![2; 33],
-                assertion_counter: 0,
-                profile: AppProfile::BuzzIosDogfood,
-                token_ciphertext: vec![3],
-                token_fingerprint: [4; 32],
-                endpoint_epoch: 1,
-                expires_at: 2_000,
-            })
+            .create_installation(
+                NewInstallation {
+                    id: Uuid::from_u128(1),
+                    app_attest_key_id: vec![1],
+                    app_attest_public_key: vec![2; 33],
+                    assertion_counter: 0,
+                    profile: AppProfile::BuzzIosDogfood,
+                    token_ciphertext: vec![3],
+                    token_fingerprint: [4; 32],
+                    endpoint_epoch: 1,
+                    expires_at: 2_000,
+                },
+                1_000,
+            )
             .await
             .unwrap();
         store
@@ -542,6 +600,133 @@ mod tests {
             .await
             .unwrap();
         store
+    }
+
+    #[tokio::test]
+    async fn challenge_issuance_is_bounded_per_window() {
+        let store = MemoryAuthorityStore::default();
+        for offset in 0..CHALLENGE_QUOTA_MAX_REQUESTS {
+            store
+                .put_challenge(Challenge {
+                    id: Uuid::from_u128(offset as u128 + 1),
+                    value: [offset as u8; 32],
+                    created_at: 1_000,
+                    expires_at: 1_300,
+                })
+                .await
+                .expect("requests within the quota are admitted");
+        }
+        assert_eq!(
+            store
+                .put_challenge(Challenge {
+                    id: Uuid::new_v4(),
+                    value: [0; 32],
+                    created_at: 1_000,
+                    expires_at: 1_300,
+                })
+                .await,
+            Err(AuthorityError::RateLimited)
+        );
+        store
+            .put_challenge(Challenge {
+                id: Uuid::new_v4(),
+                value: [0; 32],
+                created_at: 1_061,
+                expires_at: 1_361,
+            })
+            .await
+            .expect("quota reopens after the rolling window");
+    }
+
+    #[tokio::test]
+    async fn authenticated_delegation_renews_installation_lifetime() {
+        let store = store().await;
+        store
+            .upsert_delegation(Delegation {
+                id: Uuid::from_u128(3),
+                installation_id: Uuid::from_u128(1),
+                relay_pubkey: "11".repeat(32),
+                endpoint_epoch: 1,
+                generation: 2,
+                not_before: 1_900,
+                expires_at: 2_500,
+                revoked: false,
+            })
+            .await
+            .expect("new delegation renews its installation");
+        assert_eq!(
+            store
+                .installation(Uuid::from_u128(1), 2_400)
+                .await
+                .expect("renewed installation remains live")
+                .expires_at,
+            2_500
+        );
+
+        assert_eq!(
+            store
+                .upsert_delegation(Delegation {
+                    id: Uuid::from_u128(4),
+                    installation_id: Uuid::from_u128(1),
+                    relay_pubkey: "11".repeat(32),
+                    endpoint_epoch: 1,
+                    generation: 2,
+                    not_before: 2_000,
+                    expires_at: 3_000,
+                    revoked: false,
+                })
+                .await,
+            Err(AuthorityError::Rejected)
+        );
+        assert_eq!(
+            store.installation(Uuid::from_u128(1), 2_600).await,
+            Err(AuthorityError::Rejected),
+            "a rejected delegation must not extend installation authority"
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_installation_can_be_replaced_but_live_installation_cannot() {
+        let store = store().await;
+        let replacement = |id| NewInstallation {
+            id,
+            app_attest_key_id: vec![1],
+            app_attest_public_key: vec![5; 33],
+            assertion_counter: 0,
+            profile: AppProfile::BuzzIosDogfood,
+            token_ciphertext: vec![6],
+            token_fingerprint: [4; 32],
+            endpoint_epoch: 1,
+            expires_at: 3_000,
+        };
+
+        assert_eq!(
+            store
+                .create_installation(replacement(Uuid::from_u128(5)), 1_999)
+                .await,
+            Err(AuthorityError::Rejected)
+        );
+        store
+            .create_installation(replacement(Uuid::from_u128(5)), 2_001)
+            .await
+            .expect("expired token and App Attest ownership can be replaced");
+        assert!(store.installation(Uuid::from_u128(1), 2_001).await.is_err());
+        assert!(store.installation(Uuid::from_u128(5), 2_001).await.is_ok());
+        assert!(store
+            .authorize_delivery(
+                Uuid::from_u128(2),
+                &"11".repeat(32),
+                1,
+                1,
+                &"77".repeat(32),
+                Uuid::new_v4(),
+                2_100,
+                60,
+                10,
+                2_001,
+            )
+            .await
+            .is_err());
     }
 
     #[tokio::test]

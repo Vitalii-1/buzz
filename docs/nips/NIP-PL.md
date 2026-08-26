@@ -290,7 +290,7 @@ Success `200`:
 {"challenge_id":"<uuid>","challenge":"<base64url-no-pad-32-bytes>","expires_at":<unix-seconds>}
 ```
 
-The challenge is single-use. Invalid input is `400 invalid_request`; storage/randomness failure is `503 temporarily_unavailable`.
+The challenge is single-use. Invalid input is `400 invalid_request`; deployment-global challenge issuance limits return `429 rate_limited`; storage/randomness failure is `503 temporarily_unavailable`.
 
 ### Installation enrollment
 
@@ -314,7 +314,7 @@ The gateway verifies Apple's attestation chain, configured application identifie
 {"installation_handle":"<uuid>","endpoint_epoch":1,"expires_at":<unix-seconds>}
 ```
 
-Invalid attestation is `401 invalid_attestation`; a consumed/expired challenge or duplicate key/token is `404 not_authorized`.
+Invalid attestation is `401 invalid_attestation`; a consumed/expired challenge or a key/token owned by a live installation is `404 not_authorized`. A fresh verified enrollment may replace expired or revoked ownership so an app that missed its renewal window can recover.
 
 ### Relay delegation and capability issuance
 
@@ -324,7 +324,7 @@ Invalid attestation is `401 invalid_attestation`; a consumed/expired challenge o
 {"v":1,"challenge_id":"<uuid>","challenge":"<challenge>","installation_handle":"<uuid>","endpoint_epoch":<positive-integer>,"generation":<positive-integer>,"relay_pubkey":"<64-lowercase-hex>","not_before":<unix-seconds>,"expires_at":<unix-seconds>,"assertion":"<standard-base64 CBOR>"}
 ```
 
-`not_before <= now + 300`, `not_before < expires_at`, and `expires_at <= min(now + configured_max_grant_lifetime, installation.expires_at)`. The endpoint epoch MUST equal the current installation epoch. For each `(installation_handle, relay_pubkey)`, generation MUST strictly increase. Transcript domain `buzz.push.delegate.v1`; ordered object:
+`not_before <= now + 300`, `not_before < expires_at`, and `expires_at <= now + configured_max_grant_lifetime`. The endpoint epoch MUST equal the current installation epoch. For each `(installation_handle, relay_pubkey)`, generation MUST strictly increase. A successful delegation atomically extends the authenticated installation lifetime through at least the delegation's `expires_at`, allowing renewal without duplicate token enrollment. Transcript domain `buzz.push.delegate.v1`; ordered object:
 
 ```json
 {"v":1,"audience":"https://push.buzz.xyz/v1/delegations","challenge_id":"<uuid>","challenge":"<challenge>","installation_handle":"<uuid>","endpoint_epoch":<integer>,"generation":<integer>,"relay_pubkey":"<hex>","not_before":<integer>,"expires_at":<integer>}

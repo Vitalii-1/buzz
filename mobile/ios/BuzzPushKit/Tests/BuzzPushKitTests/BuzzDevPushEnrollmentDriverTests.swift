@@ -612,11 +612,12 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
     XCTAssertEqual(store.saved.count, 2)
   }
 
-  func testExpiredGrantReenrollsButReusesRelayLeaseAddress() async throws {
+  func testExpiringGrantRenewsExistingInstallationAndReusesRelayLeaseAddress() async throws {
     let existing = BuzzPushEndpointGrantRecord(
       relayOrigin: "wss://relay.example",
       relayPubkey: Self.relayPubkey,
       relayMetadataPubkey: Self.relayPubkey,
+      gatewayInstallationHandle: Self.installationHandle,
       installationId: Self.installationId,
       endpointGrant: "existing-grant",
       endpointHash: Self.hex(SHA256.hash(data: Data((1...32).map(UInt8.init)))),
@@ -634,7 +635,6 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
         return Data(repeating: 0xFF, count: 16)
       }
     )
-    var challengeCount = 0
     URLProtocolStub.handler = { request in
       switch (request.httpMethod, request.url?.absoluteString) {
       case ("GET", "https://relay.example/"):
@@ -647,29 +647,23 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
           ]
         )
       case ("POST", "http://push.example/v1/installations/challenges"):
-        challengeCount += 1
         return Self.response(
           request,
           status: 200,
           json: [
-            "challenge_id": challengeCount == 1 ? Self.firstChallengeId : Self.secondChallengeId,
+            "challenge_id": Self.firstChallengeId,
             "challenge": Self.challenge,
             "expires_at": Self.now + 300,
           ]
         )
       case ("POST", "http://push.example/v1/installations"):
-        return Self.response(
-          request,
-          status: 201,
-          json: [
-            "installation_handle": Self.installationHandle,
-            "endpoint_epoch": 1,
-            "expires_at": Self.expiresAt,
-          ]
-        )
+        XCTFail("An expiring installation must renew through authenticated delegation")
+        return Self.response(request, status: 500, json: [:])
       case ("POST", "http://push.example/v1/delegations"):
         let body = try Self.body(request)
-        XCTAssertEqual(body["generation"] as? Int, 1)
+        XCTAssertEqual(body["installation_handle"] as? String, Self.installationHandle)
+        XCTAssertEqual(body["generation"] as? Int, 8)
+        XCTAssertEqual(body["expires_at"] as? Int64, Self.expiresAt)
         return Self.response(
           request,
           status: 201,
@@ -687,7 +681,9 @@ final class BuzzDevPushEnrollmentDriverTests: XCTestCase {
     )
 
     XCTAssertEqual(record.installationId, Self.installationId)
-    XCTAssertEqual(record.generation, 1)
+    XCTAssertEqual(record.gatewayInstallationHandle, Self.installationHandle)
+    XCTAssertEqual(record.generation, 8)
+    XCTAssertEqual(record.expiresAt, Self.expiresAt)
     XCTAssertEqual(record.endpointGrant, "refreshed-grant")
   }
 
