@@ -25,6 +25,7 @@ quickstart: false
 image:
   repository: ghcr.io/block/buzz
   tag: ""                        # empty → .Chart.AppVersion
+  digest: ""                     # optional sha256:...; when set, overrides tag
   pullPolicy: IfNotPresent
   pullSecrets: []
 
@@ -93,6 +94,7 @@ ownerPubkey: ""
 #   REDIS_URL                     — full Redis URL with auth
 #   BUZZ_S3_ACCESS_KEY            — S3 access key
 #   BUZZ_S3_SECRET_KEY            — S3 secret key
+#   BUZZ_KLIPY_API_KEY            — KLIPY GIF search key; omit to disable GIF search
 secrets:
   existingSecret: ""
   # Inline overrides (NOT recommended for production; they land in values).

@@ -430,7 +430,7 @@ test("duplicate owned agents preserve provenance and exact pubkey selection", as
   await expect
     .poll(() => readOutgoingMentionPubkeys(page, "local"))
     .toEqual([managedPubkey]);
-  await expect(input).toBeEmpty();
+  await expect(input).toHaveText("@carl ");
 
   await page.getByTestId(`composer-address-lock-${managedPubkey}`).click();
   await input.fill("@carl");
@@ -720,7 +720,7 @@ test("defers agent mentions until DM members finish loading", async ({
   expect(commandCount(await readCommandLog(page), "add_channel_members")).toBe(
     commandCount(baselineCommands, "add_channel_members"),
   );
-  await expect(input).toBeEmpty();
+  await expect(input).toHaveText("@alice ");
   await expect(threadPanel).toContainText("before members resolve");
 });
 
@@ -1260,7 +1260,7 @@ test("selecting a persona mention reuses an existing persona agent", async ({
   await expect(mentionChip).toHaveText("Fizz");
 });
 
-test("managed relay-profile agents with member roles use the agent address tray", async ({
+test("managed relay-profile agents with member roles can be addressed explicitly", async ({
   page,
 }) => {
   await installMockBridge(page, {
@@ -1286,11 +1286,20 @@ test("managed relay-profile agents with member roles use the agent address tray"
   await input.fill("@char");
 
   const dropdown = autocomplete(page);
-  await expect(dropdown.getByText("charlie")).toBeVisible();
-  await expect(dropdown.getByText("agent")).toBeVisible();
-  await input.press("Enter");
+  const charlieRow = dropdown.getByTestId(
+    `mention-suggestion-${TEST_IDENTITIES.charlie.pubkey}`,
+  );
+  await expect(charlieRow.getByText("charlie")).toBeVisible();
+  await expect(charlieRow.getByText("agent")).toBeVisible();
+  await charlieRow
+    .getByRole("button", {
+      name: "Automatically mention charlie",
+      exact: true,
+    })
+    .click();
 
-  await expect(input).toBeEmpty();
+  await expect(input).toHaveText("@charlie ");
+  await expect(input.locator(".agent-mention-highlight")).toHaveText("charlie");
   await expect(
     page.getByTestId(`composer-address-lock-${TEST_IDENTITIES.charlie.pubkey}`),
   ).toBeVisible();
@@ -2617,7 +2626,7 @@ test("system member-joined rows render the joined person as a plain profile name
   await expect(joinedPersonName).not.toHaveAttribute("data-mention");
 });
 
-test("selecting a managed non-member agent from a DM addresses it", async ({
+test("a managed non-member agent from a DM can be addressed explicitly", async ({
   page,
 }) => {
   await installMockBridge(page, {
@@ -2637,13 +2646,21 @@ test("selecting a managed non-member agent from a DM addresses it", async ({
   await input.fill("@char");
 
   const dropdown = autocomplete(page);
-  await expect(dropdown.getByText("charlie")).toBeVisible();
+  const charlieRow = dropdown.getByTestId(
+    `mention-suggestion-${TEST_IDENTITIES.charlie.pubkey}`,
+  );
+  await expect(charlieRow.getByText("charlie")).toBeVisible();
   await expect(autocomplete(page)).toHaveCount(1);
   await expect(input.locator(".mention-chip")).toHaveCount(0);
-  await input.press("Enter");
+  await charlieRow
+    .getByRole("button", {
+      name: "Automatically mention charlie",
+      exact: true,
+    })
+    .click();
 
-  await expect(input).toBeEmpty();
-  await expect(input.locator(".mention-chip")).toHaveCount(0);
+  await expect(input).toHaveText("@charlie ");
+  await expect(input.locator(".agent-mention-highlight")).toHaveText("charlie");
   await expect(
     page.getByTestId(`composer-address-lock-${TEST_IDENTITIES.charlie.pubkey}`),
   ).toBeVisible();
