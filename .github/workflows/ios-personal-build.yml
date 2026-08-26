@@ -1,0 +1,136 @@
+name: Build Personal iOS IPA
+run-name: Build ${{ inputs.mobile_ref }} for personal signing
+
+on:
+  workflow_dispatch:
+    inputs:
+      mobile_ref:
+        description: Exact immutable Buzz mobile release-candidate tag
+        required: true
+        default: mobile-v0.15.0-rc.1
+        type: string
+      bundle_identifier:
+        description: Bundle identifier used before local signing
+        required: true
+        default: com.mellanni.buzzPersonal
+        type: string
+
+concurrency:
+  group: personal-ios-${{ inputs.mobile_ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Unsigned iPhone IPA
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Check out exact upstream mobile candidate
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          repository: block/buzz
+          ref: ${{ inputs.mobile_ref }}
+          persist-credentials: false
+
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+
+      - name: Validate immutable source identity
+        env:
+          MOBILE_REF: ${{ inputs.mobile_ref }}
+        run: |
+          case "$MOBILE_REF" in
+            mobile-v*-rc.*) ;;
+            *) echo "::error::mobile_ref must be an immutable mobile-vX.Y.Z-rc.N tag"; exit 1 ;;
+          esac
+          test "$(git describe --tags --exact-match)" = "$MOBILE_REF"
+
+      - name: Install Flutter dependencies
+        run: just mobile-install
+
+      - name: Configure personal app identity
+        env:
+          BUNDLE_IDENTIFIER: ${{ inputs.bundle_identifier }}
+        run: |
+          if ! [[ "$BUNDLE_IDENTIFIER" =~ ^[A-Za-z0-9-]+([.][A-Za-z0-9-]+)+$ ]]; then
+            echo "::error::Invalid bundle identifier: $BUNDLE_IDENTIFIER"
+            exit 1
+          fi
+          cat > mobile/ios/Flutter/AppOverrides.xcconfig <<EOF
+          BUNDLE_IDENTIFIER = $BUNDLE_IDENTIFIER
+          APP_DISPLAY_NAME = Buzz Personal
+          EOF
+
+      - name: Build unsigned iPhone app
+        env:
+          MOBILE_REF: ${{ inputs.mobile_ref }}
+        run: |
+          version="${MOBILE_REF#mobile-v}"
+          version="${version%%-rc.*}"
+          cd mobile
+          flutter build ios \
+            --release \
+            --no-codesign \
+            --no-pub \
+            --build-name "$version" \
+            --build-number "$GITHUB_RUN_NUMBER"
+
+      - name: Package and inspect IPA
+        id: package
+        env:
+          MOBILE_REF: ${{ inputs.mobile_ref }}
+        run: |
+          app_path="$(find mobile/build/ios/iphoneos -maxdepth 1 -type d -name '*.app' -print -quit)"
+          if [ -z "$app_path" ]; then
+            echo "::error::Flutter did not produce an iPhone .app bundle"
+            exit 1
+          fi
+
+          output_dir="$RUNNER_TEMP/buzz-ios"
+          mkdir -p "$output_dir/Payload"
+          ditto "$app_path" "$output_dir/Payload/$(basename "$app_path")"
+
+          ipa_name="Buzz-${MOBILE_REF}-unsigned.ipa"
+          (
+            cd "$output_dir"
+            ditto -c -k --sequesterRsrc --keepParent Payload "$ipa_name"
+          )
+
+          plist="$app_path/Info.plist"
+          bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")"
+          version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$plist")"
+          build="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist")"
+          executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$plist")"
+          file "$app_path/$executable" | tee "$output_dir/binary-identity.txt"
+          archs="$(lipo -archs "$app_path/$executable")"
+          case " $archs " in
+            *" arm64 "*) ;;
+            *) echo "::error::iPhone binary is missing arm64: $archs"; exit 1 ;;
+          esac
+          shasum -a 256 "$output_dir/$ipa_name" | tee "$output_dir/SHA256SUMS.txt"
+          printf 'source_ref=%s\nbundle_id=%s\nversion=%s\nbuild=%s\n' \
+            "$MOBILE_REF" "$bundle_id" "$version" "$build" \
+            | tee "$output_dir/build-identity.txt"
+
+          expected_version="${MOBILE_REF#mobile-v}"
+          expected_version="${expected_version%%-rc.*}"
+          test "$bundle_id" = "${{ inputs.bundle_identifier }}"
+          test "$version" = "$expected_version"
+          echo "artifact_path=$output_dir/$ipa_name" >> "$GITHUB_OUTPUT"
+          echo "identity_path=$output_dir/build-identity.txt" >> "$GITHUB_OUTPUT"
+          echo "binary_path=$output_dir/binary-identity.txt" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$output_dir/SHA256SUMS.txt" >> "$GITHUB_OUTPUT"
+
+      - name: Upload unsigned IPA and identity evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: Buzz-${{ inputs.mobile_ref }}-unsigned
+          path: |
+            ${{ steps.package.outputs.artifact_path }}
+            ${{ steps.package.outputs.identity_path }}
+            ${{ steps.package.outputs.binary_path }}
+            ${{ steps.package.outputs.checksum_path }}
+          if-no-files-found: error
+          retention-days: 7
