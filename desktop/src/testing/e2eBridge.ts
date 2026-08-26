@@ -3188,6 +3188,7 @@ function mockObservedUnreadProjections(
       count: 0,
       badgeCount: 0,
       appBadgeCount: 0,
+      unreadThreadEventIds: [],
       topLevelUnread: false,
       highPriorityUnread: false,
     });
@@ -3202,6 +3203,11 @@ function mockObservedUnreadProjections(
         readAt,
         scope.markers.get(`thread:${event.rootId}`) ?? 0,
       );
+    } else {
+      readAt = Math.max(
+        readAt,
+        scope.markers.get(`channel-timeline:${event.channelId}`) ?? 0,
+      );
     }
     if (event.createdAt <= readAt) continue;
     const projection = channels.get(event.channelId) ?? {
@@ -3210,6 +3216,7 @@ function mockObservedUnreadProjections(
       count: 0,
       badgeCount: 0,
       appBadgeCount: 0,
+      unreadThreadEventIds: [],
       topLevelUnread: false,
       highPriorityUnread: false,
     };
@@ -3217,6 +3224,7 @@ function mockObservedUnreadProjections(
     projection.count += 1;
     projection.badgeCount += event.countsTowardBadge ? 1 : 0;
     projection.appBadgeCount += event.countsTowardAppBadge ? 1 : 0;
+    if (event.rootId !== null) projection.unreadThreadEventIds.push(event.id);
     projection.topLevelUnread ||= event.rootId === null;
     projection.highPriorityUnread ||= event.highPriority;
     channels.set(event.channelId, projection);
@@ -14116,6 +14124,7 @@ export function maybeInstallE2eTauriMocks() {
             channelId: channel.id,
             observedEvents: [],
             maxTrigger: 0,
+            discoveryThrough: 0,
             activityRows: [],
             discovered: {
               participated: [],

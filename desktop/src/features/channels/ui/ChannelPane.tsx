@@ -201,6 +201,7 @@ export const ChannelPane = React.memo(function ChannelPane({
       channelPaneMountedRef.current = false;
     };
   }, []);
+  // Preserve thread state through deferred submission; legacy wrappers fall back to goChannel.
   const handleAutoSubmitComplete = React.useCallback(() => {
     if (onAutoSendComplete) {
       onAutoSendComplete();
@@ -257,6 +258,7 @@ export const ChannelPane = React.memo(function ChannelPane({
   );
 
   const timeoutState = useTimeoutState();
+  // Moderation DMs are read-only; lookup only for DMs and fail open without relaySelf.
   const relaySelfQuery = useRelaySelfQuery(activeChannel?.channelType === "dm");
   const isModerationDmChannel = isModerationDm(
     activeChannel ?? null,
@@ -341,6 +343,7 @@ export const ChannelPane = React.memo(function ChannelPane({
     !isMainDeferredEditPending &&
     !isSinglePanelView;
   const hasTypingActivity = typingPubkeys.length > 0;
+  // Unified observer + typing signal keeps the composer bar accurate if either source lags.
   const composerWorkingBotPubkeys = useChannelWorkingAgentPubkeys(
     activeChannel?.id ?? null,
   );
@@ -824,14 +827,7 @@ export const ChannelPane = React.memo(function ChannelPane({
           </div>
         </section>
       ) : null}
-      {/*
-       * `AnimatePresence` keeps the focus thread drawer mounted through its exit
-       * animation — without it the drawer's own existence condition
-       * (`useFocusThreadDrawer`, which is derived from `threadHeadMessage`) goes
-       * false on the same frame as the close, and there is nothing left to
-       * animate. It can hold the real thread through the exit rather than a
-       * frozen snapshot because the panel is fully prop-driven.
-       */}
+      {/* Keep the focus drawer mounted with live props through its exit animation. */}
       <AnimatePresence onExitComplete={markExitComplete}>
         {channelManagementOpen && activeChannel ? (
           <ChannelManagementAuxiliaryPanel
