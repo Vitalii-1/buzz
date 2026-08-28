@@ -37,6 +37,11 @@ jobs:
 
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
 
+      - name: Select Xcode required by connectivity_plus
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.1.1.app/Contents/Developer
+          test "$(xcodebuild -version | sed -n '1p')" = "Xcode 26.1.1"
+
       - name: Validate immutable source identity
         env:
           MOBILE_REF: ${{ inputs.mobile_ref }}
